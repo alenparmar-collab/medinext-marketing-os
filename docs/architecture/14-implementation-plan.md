@@ -23,6 +23,7 @@ Excel profiling exercise, which is a business dependency (doc 13 §2).
 - Design tokens, typography scale, dark/light, app shell skeleton
 - Supabase project, three environments, migration and seed workflow
 - Auth wiring: `@supabase/ssr`, cookie sessions, middleware, sign-in
+- `business_units` + the `business_unit_id` column convention and composite FKs (D-13)
 - `users`, `roles`, `user_roles`, `permissions`, `role_permissions` + seeds
 - Helper functions (`util.*`), custom access token hook
 - Audit schema, generic trigger, partition job
@@ -30,7 +31,7 @@ Excel profiling exercise, which is a business dependency (doc 13 §2).
 - CI: typecheck, lint, generated-types drift check, key-leak grep, pgTAP harness
 
 **Exit:** a user signs in, lands on an empty shell, sees only the nav their permissions allow;
-a pgTAP suite runs green in CI.
+a pgTAP suite runs green in CI, including the cross-unit isolation assertions.
 
 **~2 weeks.**
 
@@ -40,7 +41,7 @@ a pgTAP suite runs green in CI.
 *The spine. Everything else references it.*
 
 - `candidates`, `candidate_profiles`, `candidate_assignments`, `candidate_internal_notes`
-- Full RLS for all four roles, with the pgTAP matrix
+- Full RLS for all four roles plus the tenant gate, with the pgTAP matrix
 - Candidate list: search, filters, keyset pagination, saved views
 - Candidate create / edit / archive
 - Candidate detail shell with tab layout, Overview tab
@@ -128,7 +129,7 @@ before any machine ever writes to it.
 
 ## Stage 7 — Candidate portal
 - Portal shell, guards, `portal_*` views, portal modules
-- All portal screens (doc 08 §3), read-only
+- All portal screens (doc 08 §3), read-only (D-01)
 - Portal invite / revoke flow
 - Candidate notification subset
 - A **dedicated portal security review** and a penetration pass against the REST API using a
@@ -169,7 +170,8 @@ Stage 0 ──► 1 ──► 2 ──► 3 ──► 4
                                  └► 7 ──► 8
 ```
 
-The genuine external dependency is **Excel profiling (doc 13 P0–P1)**, which gates the final
+D-13, D-01, D-04 and D-14 are resolved, so Stage 0 has no open blockers. The genuine external
+dependency is **Excel profiling (doc 13 P0–P1)**, which gates the final
 status enums in Stage 2 and the whole of Stage 6. Start it during Stage 0. If it slips, Stage
 2 ships with provisional enums and pays for a migration later — an avoidable cost, and the
 single most useful thing the business can do early.

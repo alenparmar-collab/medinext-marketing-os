@@ -96,7 +96,7 @@ src/app/(portal)/
 ├── offers/page.tsx
 ├── documents/page.tsx
 ├── timeline/page.tsx
-└── profile/page.tsx                  read-only in V1 pending D-01
+└── profile/page.tsx                  read-only
 ```
 
 The route groups mirror the security boundary. `(portal)` pages import only from

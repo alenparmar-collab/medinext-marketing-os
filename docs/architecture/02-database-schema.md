@@ -48,6 +48,11 @@ Extensions: `pgcrypto` (UUIDv4/v7), `citext` (case-insensitive email), `btree_gi
   migration (rejection reason categories, activity types, document types). Getting this
   split wrong is a common source of migration pain, so the rule is: *if a non-engineer might
   reasonably want to add a value, it is a table.*
+- **Tenancy:** every business table carries a **`business_unit_id NOT NULL`** (decision D-13,
+  resolved). It is denormalised onto every table rather than reached by join, so that every RLS
+  policy can test it with a single predicate and no lookup. Consistency between a child row and
+  its parent is guaranteed by composite foreign key where the parent is a business table, and
+  by trigger elsewhere.
 - **Soft delete:** `archived_at` on candidate-scale entities only. Pipeline records are never
   deleted; they get a terminal status. Hard `DELETE` is reserved for admin correction and is
   audited with the full old row.
@@ -93,6 +98,60 @@ create type email_event_status      as enum ('proposed','needs_review','applied'
 Widening an enum is `alter type ... add value`, which is cheap and non-blocking. *Removing* or
 renaming a value is not, which is why the enum/lookup-table split in the conventions above
 matters and why **D-05** should be answered before Stage 2.
+
+## 1b. Business units (tenancy)
+
+**Decision D-13 is resolved: the tenant boundary is added now.**
+
+Named `business_units` rather than `organization_units` to keep it unambiguously distinct from
+`organizations`, which models *external* companies (clients, vendors, staffing agencies). The
+two are unrelated concepts and sharing a word between them would be a lasting source of bugs.
+
+```sql
+create table public.business_units (
+  id         uuid primary key default gen_random_uuid(),
+  code       text not null unique,          -- short key, e.g. 'MDX-UK'
+  name       text not null,
+  is_active  boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+```
+
+Every business table gains:
+
+```sql
+business_unit_id uuid not null references public.business_units(id)
+```
+
+and, where the row hangs off a parent business row, a composite foreign key that makes drift
+impossible — the same technique already used between `applications` and `marketing_periods`:
+
+```sql
+-- candidates carries (id, business_unit_id) as a unique key
+alter table public.candidates add constraint candidates_id_unit_uk unique (id, business_unit_id);
+
+alter table public.applications
+  add constraint applications_unit_matches_candidate
+  foreign key (candidate_id, business_unit_id)
+  references public.candidates (id, business_unit_id);
+```
+
+Users belong to a unit; internal reach beyond it is a permission, not a default:
+
+```sql
+alter table public.users add column business_unit_id uuid references public.business_units(id);
+-- plus a new permission code: 'unit.view_all' (admin only by default)
+```
+
+V1 seeds exactly one unit and every row gets it. Nothing in the interface exposes units until a
+second one exists. The cost today is one column and one predicate; the cost of adding it after
+go-live would be a rewrite of every table, policy and row.
+
+Two tables sit **outside** the boundary by design: `roles` and `permissions` are global
+catalogues, and `organizations` is **[open]** — a vendor that works with two business units is
+plausibly one organization, so it carries a nullable `business_unit_id` where `NULL` means
+"shared across units."
 
 ## 2. Identity & access
 
@@ -170,6 +229,7 @@ end $$;
 ```sql
 create table public.candidates (
   id             uuid primary key default gen_random_uuid(),
+  business_unit_id uuid not null references public.business_units(id),
   reference      text not null unique,        -- human key, e.g. 'MDX-00142'
   user_id        uuid unique references public.users(id) on delete set null,
                  -- null until the candidate is invited to the portal
@@ -193,7 +253,7 @@ create table public.candidates (
 );
 
 create unique index candidates_primary_email_active_uk
-  on public.candidates (primary_email) where archived_at is null;
+  on public.candidates (business_unit_id, primary_email) where archived_at is null;
 create index candidates_full_name_trgm on public.candidates using gin (full_name gin_trgm_ops);
 ```
 
@@ -372,6 +432,7 @@ create unique index organization_contacts_email_uk on public.organization_contac
 ```sql
 create table public.applications (
   id                   uuid primary key default gen_random_uuid(),
+  business_unit_id     uuid not null references public.business_units(id),
   candidate_id         uuid not null references public.candidates(id) on delete cascade,
   marketing_period_id  uuid not null,
   job_title            text not null,
@@ -393,7 +454,9 @@ create table public.applications (
   created_at           timestamptz not null default now(),
   updated_at           timestamptz not null default now(),
   foreign key (marketing_period_id, candidate_id)
-    references public.marketing_periods(id, candidate_id)   -- cannot drift
+    references public.marketing_periods(id, candidate_id),  -- period cannot drift
+  foreign key (candidate_id, business_unit_id)
+    references public.candidates(id, business_unit_id)      -- unit cannot drift
 );
 
 create index applications_candidate_applied on public.applications (candidate_id, applied_at desc);
@@ -571,6 +634,7 @@ create table public.offers (
 ```sql
 create table public.daily_reports (
   id           uuid primary key default gen_random_uuid(),
+  business_unit_id uuid not null references public.business_units(id),
   user_id      uuid not null references public.users(id) on delete restrict,
   report_date  date not null,
   status       daily_report_status not null default 'draft',  -- draft | submitted | locked
@@ -657,6 +721,7 @@ Storage path convention, which the Storage RLS policies parse:
 ```sql
 create table public.review_items (
   id            uuid primary key default gen_random_uuid(),
+  business_unit_id uuid not null references public.business_units(id),
   item_type     review_item_type not null,
                 -- low_confidence_classification | ambiguous_identity | possible_duplicate
                 -- | conflicting_data | unlinked_record | import_anomaly | manual
@@ -887,6 +952,10 @@ create table audit.audit_logs (
 
 `security_invoker` views project columns; RLS on the base tables still applies underneath.
 Two independent layers, neither sufficient alone.
+
+All portal views are read paths only. **Decision D-01 is resolved: the portal is strictly
+read-only in V1**, so no candidate `INSERT`/`UPDATE`/`DELETE` policy exists on any table, and
+none of these views is updatable.
 
 ```sql
 create view public.portal_applications with (security_invoker = true) as

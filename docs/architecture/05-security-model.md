@@ -88,6 +88,19 @@ language sql stable security definer set search_path = '' as $$
   )
 $$;
 
+-- The business unit the signed-in user belongs to. Null for a user with cross-unit reach.
+create or replace function util.current_business_unit_id() returns uuid
+language sql stable security definer set search_path = '' as $$
+  select u.business_unit_id from public.users u where u.id = auth.uid()
+$$;
+
+-- Tenant gate. True when the row's unit matches the user's, or the user may cross units.
+create or replace function util.in_business_unit(p_unit_id uuid) returns boolean
+language sql stable security definer set search_path = '' as $$
+  select util.has_permission('unit.view_all')
+      or p_unit_id = (select u.business_unit_id from public.users u where u.id = auth.uid())
+$$;
+
 -- The candidate row belonging to the signed-in portal user, or null.
 create or replace function util.own_candidate_id() returns uuid
 language sql stable security definer set search_path = '' as $$
@@ -100,7 +113,12 @@ $$;
 create or replace function util.can_access_candidate(p_candidate_id uuid) returns boolean
 language sql stable security definer set search_path = '' as $$
   select
-    util.is_active_user() and (
+    util.is_active_user()
+    and exists (
+      select 1 from public.candidates c
+      where c.id = p_candidate_id and util.in_business_unit(c.business_unit_id)
+    )
+    and (
       util.has_permission('candidate.view_all')
       or exists (
         select 1 from public.candidate_assignments ca
@@ -114,6 +132,11 @@ $$;
 
 Two implementation notes that matter in practice:
 
+- **The tenant gate lives inside `can_access_candidate`, not alongside it.** Every
+  candidate-scoped table already funnels through that one function, so the unit check is
+  inherited by all of them and cannot be forgotten on a new table. Tables that are *not*
+  candidate-scoped — `daily_reports`, `review_items`, `notifications`, `users` — test
+  `util.in_business_unit(business_unit_id)` directly in their own policies.
 - **`SECURITY DEFINER` is required to avoid infinite recursion.** A policy on `candidates`
   that queries `candidate_assignments` would otherwise trigger that table's policies, which
   may query back. Definer functions read with the owner's rights and stop the loop.
@@ -156,10 +179,11 @@ for delete to authenticated
 using ( (select util.has_permission('user.manage')) );
 ```
 
-Note there is **no candidate `UPDATE` policy**. In V1 the portal is read-only pending
-D-01; if the answer is "candidates may edit their profile," it becomes one narrowly scoped
-policy on `candidate_profiles` only — never on `candidates` itself, because status and
-assignment must not be self-editable.
+Note there is **no candidate `UPDATE` policy** — and per resolved decision D-01 there is none
+anywhere in V1. The portal is strictly read-only: candidates hold `SELECT` policies and nothing
+else, on any table. If profile editing is added later it becomes one narrowly scoped policy on
+`candidate_profiles` only, never on `candidates` itself, because status and assignment must not
+be self-editable.
 
 ### Child records — the repeated shape
 
@@ -321,7 +345,9 @@ Security claims that are not tested are wishes. The following are CI gates, not 
 
 1. **pgTAP RLS suite.** For each table, assert: an admin JWT sees all rows; a recruiter JWT
    sees only assigned rows; a candidate JWT sees only own rows; a candidate JWT sees **zero**
-   rows on every internal table. The last assertion runs over a list generated from
+   rows on every internal table; a user in business unit A sees **zero** rows belonging to
+   business unit B; and a candidate JWT is rejected on every `INSERT`, `UPDATE` and `DELETE`
+   against every table. The last assertion runs over a list generated from
    `information_schema`, so a newly added table fails the suite until it is classified.
 2. **RLS-enabled check.** A test that fails if any table in `public` lacks
    `rowsecurity = true`.

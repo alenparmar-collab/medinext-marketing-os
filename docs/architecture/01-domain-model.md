@@ -13,8 +13,8 @@ Every table below exists to make one clause of that sentence precise.
 
 ## 2. Entity groups
 
-### Group A — Identity & Access
-`users` · `roles` · `user_roles` · `permissions` · `role_permissions`
+### Group A — Identity, tenancy & access
+`business_units` · `users` · `roles` · `user_roles` · `permissions` · `role_permissions`
 
 ### Group B — Candidate
 `candidates` · `candidate_profiles` · `candidate_assignments` · `candidate_internal_notes`
@@ -153,14 +153,13 @@ deduplication, no "how many submissions to Company X," and no way for email inte
 recognise a repeat vendor. With it, we can start free-text and resolve to organizations
 progressively.
 
-**Recommendation:** create the tables in V1 and keep a free-text fallback column
+**Approved (D-14).** The tables are created in V1 with a free-text fallback column
 (`client_name_raw`) so data entry is never blocked by a missing organization record.
-Flagged as an addition — needs your approval, since it is outside the entity list you gave.
 
 ## 5. What the candidate can see
 
-The portal exposes a strict subset. This is a *product* boundary as much as a security one,
-and its exact width is [DECISION NEEDED] (see doc 15, D-02). The architecture supports any
+The portal exposes a strict subset, **read-only** (D-01 resolved). Its exact width is still a
+*product* decision — [DECISION NEEDED] (see doc 15, D-02). The architecture supports any
 width via the `portal_*` views without schema change.
 
 | Entity | Candidate visibility (proposed default) |

@@ -10,8 +10,8 @@ the filter, and internal commentary appears on a candidate's screen. A separate 
 with its own data path cannot leak that way, because the internal columns are not on the
 query path at all.
 
-**V1 posture: read-only.** Pending D-01 (doc 15), a candidate can see their information and
-download documents marked visible to them. They cannot edit records, upload files, or confirm
+**V1 posture: read-only. Decision D-01 is resolved and this is now fixed for V1.** A candidate
+can see their information and download documents marked visible to them. They cannot edit records, upload files, or confirm
 attendance. Read-only is the safe default: adding write paths later is additive, while
 removing one after candidates have used it is a support problem.
 
@@ -39,7 +39,7 @@ audit line by line.
 | `/offers` | Offers and their status |
 | `/documents` | Only `visibility = 'candidate_visible'`; download via signed URL |
 | `/timeline` | Chronological, filtered to candidate-safe event kinds |
-| `/profile` | Their profile as the system holds it. Read-only in V1. |
+| `/profile` | Their profile as the system holds it. Read-only. |
 
 Rejections are **excluded by default** — D-02. This is a product and duty-of-care question,
 not a technical one: rejection reasons entered as internal shorthand are frequently blunt, and

@@ -122,4 +122,9 @@ is expensive to undo. These are collected in document 15. Everything else is a
 recommendation I am prepared to defend and implement as written.
 
 Anything marked **[PROPOSED ADDITION]** is a table or concept not in the original entity
-list. I have flagged rather than silently added them.
+list. I flagged rather than silently added them; all were subsequently approved (D-14).
+
+**Four decisions are already taken** and are reflected throughout: the system carries a
+business-unit tenant boundary from the first migration (D-13); the candidate portal is strictly
+read-only in V1 (D-01); managers are unit-wide rather than team-scoped (D-04); and the proposed
+additional tables are approved (D-14). Stage 0 has no open blockers.

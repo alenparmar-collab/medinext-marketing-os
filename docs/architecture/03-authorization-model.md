@@ -38,7 +38,7 @@ Codes are `<domain>.<action>`; `*_all` distinguishes org-wide from assignment-sc
 | report | `report.submit_own`, `report.view_own`, `report.view_all`, `report.lock` |
 | review | `review.view`, `review.resolve`, `review.assign` |
 | notification | `notification.broadcast` |
-| admin | `user.manage`, `role.manage`, `permission.manage`, `audit.read`, `import.execute`, `organization.manage` |
+| admin | `user.manage`, `role.manage`, `permission.manage`, `audit.read`, `import.execute`, `organization.manage`, `unit.manage`, `unit.view_all` |
 
 ### Default matrix
 
@@ -56,9 +56,10 @@ Codes are `<domain>.<action>`; `*_all` distinguishes org-wide from assignment-sc
 | report.submit_own / view_own | ✓ | ✓ | ✓ | — |
 | review.view / resolve | ✓ | ✓ | view only² | — |
 | user.manage, role.manage, audit.read, import.execute | ✓ | — | — | — |
+| unit.manage, unit.view_all | ✓ | — | — | — |
 | portal.* (own records) | — | — | — | ✓ |
 
-¹ ² Marked cells are **[DECISION NEEDED]** — see doc 15, D-03. I have proposed the
+All rows above are scoped to the acting user's business unit. ¹ ² Marked cells are **[DECISION NEEDED]** — see doc 15, D-03. I have proposed the
 conservative reading; widening either is a one-row change.
 
 The `candidate` role holds no `public.*` permissions at all. Portal access is not a
@@ -73,15 +74,18 @@ Permission answers *what kind of thing may I do*. Scope answers *to which rows*.
 required; either alone is a vulnerability.
 
 ```
-allowed = has_permission(action)  AND  in_scope(record)
+allowed = has_permission(action)  AND  in_business_unit(record)  AND  in_scope(record)
 ```
+
+The tenant gate is first and unconditional (decision D-13). No permission short of
+`unit.view_all` crosses a business unit, including admin permissions.
 
 Scope resolution for internal users:
 
 | Role | Candidate scope |
 |---|---|
-| admin | all |
-| manager | all (org-wide by default — [DECISION NEEDED] if managers should be team-scoped, D-04) |
+| admin | all, and `unit.view_all` by default |
+| manager | all candidates **within their business unit** (D-04 resolved: unit-wide, not team-scoped) |
 | recruiter | candidates with an **active** row in `candidate_assignments` |
 
 Recruiter scope is *current*, not historical: unassigning a recruiter removes their access
