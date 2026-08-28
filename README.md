@@ -4,10 +4,11 @@ Marketing operations platform for candidate marketing. Replaces an Excel-based
 workflow with an auditable system, and gives each candidate a portal showing
 only their own information.
 
-**Current stage: Build 2 — foundation.** The database, authorization, security
-model, application shell and navigation structure are in place. Applications,
-interviews, assessments, daily reports, notifications and the review queue are
-scaffolded in navigation but not implemented.
+**Current stage: Build 3 — candidate marketing core.** The foundation from
+Build 2 plus applications, marketing activities, the candidate timeline,
+internal notes and a candidate portal that shows a candidate their own
+applications and activity. Interviews, assessments, daily reports,
+notifications and the review queue remain navigation only.
 
 ---
 
@@ -46,7 +47,12 @@ scaffolded in navigation but not implemented.
 | Application shell and full navigation structure | Done |
 | Error, loading, empty, unauthorized and not-found states | Done |
 | Demo seed data | Done |
-| Applications, interviews, assessments, daily reports, notifications, review queue | Navigation only |
+| Applications: list, detail, create, edit, status change with history | Done |
+| Marketing activities, manual logging, derived counts | Done |
+| Candidate workspace with Overview / Applications / Marketing / Timeline / Documents | Done |
+| Internal notes with author-only editing | Done |
+| Candidate portal: own applications and activity | Done |
+| Interviews, assessments, daily reports, notifications, review queue | Navigation only |
 | Document upload and download | Metadata and policies only — no file transfer yet |
 | Email ingestion, AI, payments, sales, WhatsApp, mobile | Out of scope |
 
@@ -166,6 +172,11 @@ Forward-only SQL in `supabase/migrations/`, applied in filename order.
 | `0010_grants.sql` | Table privileges; `anon` gets nothing |
 | `0011_storage.sql` | Private bucket and storage policies |
 | `0012_reference_data.sql` | Roles, permissions, the role matrix, document types |
+| `0013_applications_and_activities.sql` | `applications`, `application_status_history`, `marketing_activities`, visibility trigger |
+| `0014_applications_rls.sql` | RLS and grants for the three new tables |
+| `0015_application_automation.sql` | History and activity triggers, `candidate_counts`, `candidate_timeline` |
+| `0016_build3_permissions.sql` | Application and activity permissions |
+| `0017_status_change_rpc.sql` | Atomic `change_application_status` with an optional history note |
 
 With the Supabase CLI:
 
@@ -203,8 +214,10 @@ no real candidate information appears anywhere in it.
 
 Password for every demo account: `DemoPass123!`
 
-Six candidates across two business units. The shape is chosen to make the
-permission model **falsifiable**, not to look impressive:
+Six candidates and twelve applications across two business units, with
+activities covering interviews, assessments, rejections, offers, follow-ups and
+an internal note. The shape is chosen to make the permission model
+**falsifiable**, not to look impressive:
 
 - Salas is assigned Priya and Kwame; Halvorsen is assigned Lucia and Dmitri, so
   "a recruiter sees only their own" can fail.
@@ -214,6 +227,15 @@ permission model **falsifiable**, not to look impressive:
 - Hiroshi sits in a second business unit, so cross-tenant isolation can fail.
 - Priya has one published and one internal-only document, so document visibility
   can fail.
+- Two candidates with portal logins each have their own applications, so
+  "candidate A cannot read candidate B's applications" can fail.
+- One internal NOTE activity exists, so "a candidate can never read internal
+  commentary" can fail.
+
+Note what the seed does **not** insert: `application_submitted` activities,
+`status_change` activities and every status-history row. Database triggers
+produce those. If they are missing after a seed run, the automation is broken —
+which is precisely what the seed should reveal.
 
 ---
 
@@ -261,6 +283,9 @@ makes it a seed row.
 | Manage marketing periods | ✓ | ✓ | ✓ | — |
 | Upload documents | ✓ | ✓ | ✓ | — |
 | Publish a document to the portal | ✓ | ✓ | — | — |
+| View, create and update applications | ✓ | ✓ | ✓ | — |
+| Delete an application | ✓ | ✓ | — | — |
+| Record marketing activity | ✓ | ✓ | ✓ | — |
 | Manage users, roles, permissions, audit | ✓ | — | — | — |
 | Read across business units | ✓ | — | — | — |
 
@@ -338,11 +363,13 @@ policies; it exercises them.
 npm run db:test
 ```
 
-70 assertions covering: anonymous access, role resolution, internal scope,
-cross-tenant isolation, candidate isolation in both directions, document
-authorization, write authorization, audit capture and immutability, assignment
-and account lifecycle, and structural guarantees generated from the catalogue
-(so a table added in a later build fails the suite until it is classified).
+121 assertions covering: anonymous access, role resolution, internal scope,
+cross-tenant isolation, candidate isolation in both directions on candidates,
+applications, activities and the timeline, internal-note isolation, document
+authorization, write authorization, audit capture and immutability, the
+automation that derives history and activities, derived counts, assignment and
+account lifecycle, and structural guarantees generated from the catalogue (so a
+table added in a later build fails the suite until it is classified).
 
 **Proving the suite can fail:**
 
@@ -350,7 +377,9 @@ and account lifecycle, and structural guarantees generated from the catalogue
 bash scripts/db-mutation-test.sh
 ```
 
-This deliberately breaks candidate isolation and asserts the suite catches it. A
+Three probes, each deliberately breaking one guarantee — candidate isolation on
+the candidate record, candidate isolation on applications, and internal notes
+staying out of the portal — and asserting that a named assertion catches it. A
 green suite that cannot go red is worthless; run this after any policy change.
 
 ### 2. Unit tests
@@ -359,7 +388,7 @@ green suite that cannot go red is worthless; run this after any policy change.
 npm test
 ```
 
-30 assertions over validation schemas and the config/SQL sync — including that
+59 assertions over validation schemas and the config/SQL sync — including that
 the TypeScript permission catalogue matches the SQL seed, that the enums match,
 that no sales role exists in either place, and that nothing anywhere implements
 location-mismatch logic.
@@ -449,6 +478,32 @@ field were left blank.
 locations contain commas ("Manchester, UK"), and a comma-separated control
 silently turns one location into two.
 
+**Status history and activities are written by database triggers, not
+application code.** Counts must be derived from records, and the guarantee has
+to hold for every write path — including the email pipeline in a later build,
+which is the path most likely to forget. A trigger cannot be forgotten by code
+that does not know it exists.
+
+**Only manually loggable activity types are offered in the UI.**
+`application_submitted` and `status_change` are produced by the database.
+Offering them by hand would let someone log an application that does not exist,
+and the derived counts would stop matching the records they count.
+
+**Internal notes cannot leak by omission.** A trigger forces
+`activity_type = 'note'` to internal visibility regardless of what the caller
+passes, so a missing argument at a call site cannot put staff commentary in
+front of a candidate.
+
+**Tenancy is resolved server-side, never accepted from a form.** Child records
+read their `business_unit_id` from the candidate row under RLS. The composite
+foreign key would reject a mismatch anyway, but a field that exists only to be
+echoed back is a footgun.
+
+**Seed UUIDs must be RFC 4122 valid.** PostgreSQL accepts any 32 hex digits;
+Zod's `.uuid()` enforces the version and variant nibbles. An id that Postgres
+likes and Zod rejects passes every database test and then fails the first time a
+real form submits it. A unit test now guards this.
+
 **Placeholder pages instead of missing routes.** Build 2 is asked for the
 navigation structure without the screens behind it. A link that 404s is worse
 than one naming the build that delivers it.
@@ -503,7 +558,8 @@ These are enforced, not merely documented:
 6. **No rate limiting.** Planned for the build that adds portal invitations and
    exports.
 7. **Marketing period creation has no UI.** The command, schema and policies
-   exist and are tested; the form is not built.
+   exist and are tested; the form is not built. Periods are visible on the
+   candidate's Marketing tab and in the seed.
 8. **No pgTAP.** The RLS suite is plain SQL with a small assertion harness,
    which needs no extension and runs anywhere PostgreSQL does.
 9. **Audit partitions are not auto-created.** `util.ensure_audit_partition()`
@@ -517,8 +573,9 @@ These are enforced, not merely documented:
 
 ## Next build
 
-Build 3, per the plan in
+Build 4, per the plan in
 [`docs/architecture/14-implementation-plan.md`](./docs/architecture/14-implementation-plan.md):
-the full MediNext design system on top of these tokens, user and role
-administration, candidate portal invitations, document upload and download, and
-candidate editing with assignment management.
+interviews and assessments as first-class records (currently they exist only as
+activity types), promoted from `marketing_activities` into their own tables with
+scheduling, reschedule history and outcomes — plus notifications, and the
+document upload and download flow.

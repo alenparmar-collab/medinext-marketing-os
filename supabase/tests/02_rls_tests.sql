@@ -28,11 +28,11 @@ truncate test.results;
 \set EU_UNIT 00000000-0000-4000-9000-000000000001
 
 -- Build 3: applications and activities
-\set APP_PRIYA_1 00000000-0000-4000-f000-000000000001
-\set APP_LUCIA_1 00000000-0000-4000-f000-000000000007
-\set APP_NAOMI   00000000-0000-4000-f000-00000000000b
-\set APP_HIROSHI 00000000-0000-4000-f000-00000000000c
-\set ACT_NOTE    00000000-0000-4000-1000-000000000006
+\set APP_PRIYA_1 00000000-0000-4000-8f00-000000000001
+\set APP_LUCIA_1 00000000-0000-4000-8f00-000000000007
+\set APP_NAOMI   00000000-0000-4000-8f00-00000000000b
+\set APP_HIROSHI 00000000-0000-4000-8f00-00000000000c
+\set ACT_NOTE    00000000-0000-4000-9100-000000000006
 
 -- ---------------------------------------------------------------------------
 -- SECTION 1 — Unauthenticated access
@@ -402,14 +402,14 @@ declare v_vis text;
 begin
   insert into public.marketing_activities
     (id, business_unit_id, candidate_id, activity_type, summary, visibility, created_by)
-  values ('00000000-0000-4000-1000-0000000000ff',
+  values ('00000000-0000-4000-9100-0000000000ff',
           '00000000-0000-4000-9000-000000000001',
           '00000000-0000-4000-a000-000000000001',
           'note', 'attempted candidate-visible note', 'candidate_visible',
           '00000000-0000-4000-8000-000000000003');
 
   select visibility into v_vis from public.marketing_activities
-   where id = '00000000-0000-4000-1000-0000000000ff';
+   where id = '00000000-0000-4000-9100-0000000000ff';
 
   insert into test.results (section, name, passed, detail)
   values ('isolation', 'a note forced candidate_visible is coerced back to internal',
@@ -509,13 +509,13 @@ select test.check('automation', 'every application produced an application_submi
 
 select test.check('automation', 'the recruiter status change above wrote a history row',
   (select count(*) > 0 from public.application_status_history
-    where application_id = '00000000-0000-4000-f000-000000000001'
+    where application_id = '00000000-0000-4000-8f00-000000000001'
       and to_status = 'screening'
       and changed_by = '00000000-0000-4000-8000-000000000003'), true);
 
 select test.check('automation', 'the recruiter status change above wrote a status_change activity',
   (select count(*) > 0 from public.marketing_activities
-    where application_id = '00000000-0000-4000-f000-000000000001'
+    where application_id = '00000000-0000-4000-8f00-000000000001'
       and activity_type = 'status_change'), true);
 
 select test.check('automation', 'application changes are captured in the audit log',

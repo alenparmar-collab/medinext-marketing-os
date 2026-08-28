@@ -28,22 +28,32 @@ function sqlCodeOnly(text: string): string {
     .replace(/comment on [\s\S]*?;/gi, '');
 }
 
-const referenceData = sql('migrations/0012_reference_data.sql');
+/**
+ * Permissions are seeded across more than one migration as builds add domains.
+ * Reading only the first would make every later permission look undeclared.
+ */
+const referenceData =
+  sql('migrations/0012_reference_data.sql') + '\n' + sql('migrations/0016_build3_permissions.sql');
 const enums = sql('migrations/0002_enums.sql');
 
 function seededPermissionCodes(): string[] {
-  const block = referenceData.slice(
-    referenceData.indexOf('insert into public.permissions'),
-    referenceData.indexOf('on conflict (code) do update\n  set domain'),
-  );
-  return [...block.matchAll(/\('([a-z_]+\.[a-z_]+)'/g)].map((m) => m[1] as string);
+  const codes = new Set<string>();
+  // Each migration has its own `insert into public.permissions (...) values`
+  // block, terminated by its `on conflict` clause.
+  const pattern = /insert into public\.permissions[\s\S]*?on conflict/g;
+  for (const block of referenceData.match(pattern) ?? []) {
+    for (const match of block.matchAll(/\('([a-z_]+\.[a-z_]+)'/g)) {
+      codes.add(match[1] as string);
+    }
+  }
+  return [...codes];
 }
 
 describe('permission catalogue', () => {
   const seeded = seededPermissionCodes();
 
-  it('finds the seeded permissions in the migration', () => {
-    expect(seeded.length).toBeGreaterThan(15);
+  it('finds the seeded permissions in the migrations', () => {
+    expect(seeded.length).toBeGreaterThan(20);
   });
 
   it('declares every seeded permission in TypeScript', () => {
@@ -130,5 +140,37 @@ describe('product rules encoded in the schema', () => {
       .split('\n')
       .filter((l) => l.includes('preferred_locations') && l.includes('current_location'));
     expect(comparingLines).toEqual([]);
+  });
+});
+
+describe('seed data hygiene', () => {
+  const seedFiles = ['seed/02_demo_data.sql', 'seed/03_demo_applications.sql'];
+  const allSeed = seedFiles.map(sql).join('\n');
+
+  /**
+   * PostgreSQL accepts any 32 hex digits as a uuid, but Zod's .uuid() enforces
+   * RFC 4122 — version 1-8 and variant 8/9/a/b. A seed id that Postgres likes
+   * and Zod rejects passes every database test and then fails the moment a real
+   * form submits it, which is exactly how this was found.
+   */
+  it('uses only RFC 4122 valid UUIDs', () => {
+    const ids = allSeed.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g) ?? [];
+    expect(ids.length).toBeGreaterThan(20);
+
+    const invalid = [...new Set(ids)].filter(
+      (id) => !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id),
+    );
+    expect(invalid).toEqual([]);
+  });
+
+  it('contains no real-looking contact details', () => {
+    // Every demo address must sit on the reserved .test TLD.
+    const emails = allSeed.match(/[\w.+-]+@[\w.-]+\.[a-z]{2,}/gi) ?? [];
+    const offenders = emails.filter((e) => !e.toLowerCase().endsWith('.test'));
+    expect(offenders).toEqual([]);
+  });
+
+  it('records no sales activity or roles', () => {
+    expect(/sales(person)?/i.test(allSeed)).toBe(false);
   });
 });

@@ -2,10 +2,12 @@ import 'server-only';
 import { createServerSupabase } from '@/lib/supabase/server';
 import { AppError } from '@/server/auth/errors';
 import type {
+  CandidateCounts,
   CandidateDetail,
   CandidateListItem,
   CandidateListPage,
 } from './types';
+import { EMPTY_COUNTS } from './types';
 import type { CandidateListParams } from './schemas';
 import type { MarketingStatus, AssignmentType } from '@/config/statuses';
 
@@ -22,7 +24,73 @@ const LIST_COLUMNS =
   'id, reference, full_name, email, primary_skill, current_location, marketing_status, total_experience_months, user_id, archived_at, updated_at';
 
 const DETAIL_COLUMNS =
-  'id, reference, full_name, email, phone, primary_skill, skills, total_experience_months, current_location, visa_status, education, certifications, preferred_locations, marketing_status, user_id, archived_at, created_at, updated_at';
+  'id, business_unit_id, reference, full_name, email, phone, primary_skill, skills, total_experience_months, current_location, visa_status, education, certifications, preferred_locations, marketing_status, user_id, archived_at, created_at, updated_at';
+
+/**
+ * Derived counts for a set of candidates, in one round trip.
+ *
+ * public.candidate_counts is SECURITY INVOKER, so RLS filters it exactly as it
+ * would a direct query: a recruiter's figures cover their candidates and a
+ * manager's the unit, with no role logic here.
+ *
+ * Nothing in this product stores a total. Every number on screen traces to the
+ * records that produced it.
+ */
+export async function getCandidateCounts(
+  candidateIds: string[],
+): Promise<Map<string, CandidateCounts>> {
+  const result = new Map<string, CandidateCounts>();
+  if (candidateIds.length === 0) return result;
+
+  const supabase = await createServerSupabase();
+  const { data, error } = await supabase.rpc('candidate_counts', {
+    p_candidate_ids: candidateIds,
+  });
+
+  if (error) throw error;
+
+  for (const row of data ?? []) {
+    result.set(row.candidate_id, {
+      applications: Number(row.applications),
+      recruiterResponses: Number(row.recruiter_responses),
+      interviews: Number(row.interviews),
+      assessments: Number(row.assessments),
+      rejections: Number(row.rejections),
+      offers: Number(row.offers),
+    });
+  }
+  return result;
+}
+
+/** Active assignee names per candidate, primary recruiter first. */
+async function getActiveRecruiters(candidateIds: string[]): Promise<Map<string, string[]>> {
+  const byCandidate = new Map<string, string[]>();
+  if (candidateIds.length === 0) return byCandidate;
+
+  const supabase = await createServerSupabase();
+  const { data: assignments } = await supabase
+    .from('candidate_assignments')
+    .select('candidate_id, user_id, assignment_type')
+    .in('candidate_id', candidateIds)
+    .is('ends_on', null);
+
+  const rows = assignments ?? [];
+  const userIds = [...new Set(rows.map((a) => a.user_id))];
+  if (userIds.length === 0) return byCandidate;
+
+  const { data: users } = await supabase.from('users').select('id, full_name').in('id', userIds);
+  const names = new Map((users ?? []).map((u) => [u.id, u.full_name] as const));
+
+  for (const a of rows) {
+    const list = byCandidate.get(a.candidate_id) ?? [];
+    const name = names.get(a.user_id);
+    if (!name) continue;
+    if (a.assignment_type === 'primary_recruiter') list.unshift(name);
+    else list.push(name);
+    byCandidate.set(a.candidate_id, list);
+  }
+  return byCandidate;
+}
 
 export async function listCandidates(params: CandidateListParams): Promise<CandidateListPage> {
   const supabase = await createServerSupabase();
@@ -34,6 +102,10 @@ export async function listCandidates(params: CandidateListParams): Promise<Candi
   }
   if (params.status) {
     query = query.eq('marketing_status', params.status);
+  }
+  if (params.skill) {
+    // Matches the primary skill or any entry in the skills array.
+    query = query.or(`primary_skill.ilike.%${params.skill.replace(/[(),]/g, ' ')}%`);
   }
   if (params.search) {
     // Escape PostgREST's `or` delimiters before interpolating user input.
@@ -72,9 +144,20 @@ export async function listCandidates(params: CandidateListParams): Promise<Candi
   const rows = data ?? [];
   const hasMore = rows.length > params.limit;
   const page = hasMore ? rows.slice(0, params.limit) : rows;
+  const ids = page.map((r) => r.id);
+
+  // Two extra round trips for the whole page, not one per row.
+  const [counts, recruiters] = await Promise.all([
+    getCandidateCounts(ids),
+    getActiveRecruiters(ids),
+  ]);
 
   return {
-    items: page.map(toListItem),
+    items: page.map((row) => ({
+      ...toListItem(row),
+      recruiters: recruiters.get(row.id) ?? [],
+      counts: counts.get(row.id) ?? EMPTY_COUNTS,
+    })),
     nextCursor: hasMore ? (page[page.length - 1]?.full_name ?? null) : null,
   };
 }
@@ -91,7 +174,7 @@ function toListItem(row: {
   user_id: string | null;
   archived_at: string | null;
   updated_at: string;
-}): CandidateListItem {
+}): Omit<CandidateListItem, 'recruiters' | 'counts'> {
   return {
     id: row.id,
     reference: row.reference,
@@ -126,7 +209,7 @@ export async function getCandidate(candidateId: string): Promise<CandidateDetail
   // record exists.
   if (!candidate) throw new AppError('NOT_FOUND', 'Candidate not found.');
 
-  const [assignmentsResult, periodsResult, documentsResult] = await Promise.all([
+  const [assignmentsResult, periodsResult, documentsResult, counts] = await Promise.all([
     supabase
       .from('candidate_assignments')
       .select('id, user_id, assignment_type, starts_on, ends_on, is_active')
@@ -143,6 +226,7 @@ export async function getCandidate(candidateId: string): Promise<CandidateDetail
       .eq('candidate_id', candidateId)
       .is('deleted_at', null)
       .order('uploaded_at', { ascending: false }),
+    getCandidateCounts([candidateId]),
   ]);
 
   const assignedUserIds = (assignmentsResult.data ?? []).map((a) => a.user_id);
@@ -157,6 +241,7 @@ export async function getCandidate(candidateId: string): Promise<CandidateDetail
 
   return {
     id: candidate.id,
+    businessUnitId: candidate.business_unit_id,
     reference: candidate.reference,
     fullName: candidate.full_name,
     email: candidate.email,
@@ -190,6 +275,7 @@ export async function getCandidate(candidateId: string): Promise<CandidateDetail
       status: p.status as MarketingStatus,
       objective: p.objective,
     })),
+    counts: counts.get(candidateId) ?? EMPTY_COUNTS,
     documents: (documentsResult.data ?? []).map((d) => ({
       id: d.id,
       documentType: d.document_type,

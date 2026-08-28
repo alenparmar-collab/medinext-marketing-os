@@ -50,7 +50,9 @@ echo "==> Public endpoints"
 
 echo "==> Protected routes refuse an unauthenticated caller"
 for path in / /overview /candidates /candidates/new /marketing /settings /team \
-            /portal /portal/profile /portal/marketing /portal/documents; do
+            /applications /applications/new \
+            /portal /portal/profile /portal/marketing /portal/documents \
+            /portal/applications /portal/activity; do
   code="$(curl -s -o /dev/null -w '%{http_code}' "${BASE}${path}")"
   target="$(curl -s -o /dev/null -w '%{redirect_url}' "${BASE}${path}")"
   if [[ "${code}" == "307" && "${target}" == *"/sign-in"* ]]; then

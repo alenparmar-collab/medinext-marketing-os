@@ -7,6 +7,29 @@ import type { MarketingStatus, AssignmentType } from '@/config/statuses';
  * change, and — more importantly — so an internal column cannot drift into a
  * payload that reaches a candidate.
  */
+/**
+ * Counts are DERIVED from records, never stored. There are no cached totals
+ * anywhere in this product, so a figure on screen can always be traced to the
+ * rows that produced it.
+ */
+export interface CandidateCounts {
+  applications: number;
+  recruiterResponses: number;
+  interviews: number;
+  assessments: number;
+  rejections: number;
+  offers: number;
+}
+
+export const EMPTY_COUNTS: CandidateCounts = {
+  applications: 0,
+  recruiterResponses: 0,
+  interviews: 0,
+  assessments: 0,
+  rejections: 0,
+  offers: 0,
+};
+
 export interface CandidateListItem {
   id: string;
   reference: string;
@@ -19,6 +42,9 @@ export interface CandidateListItem {
   hasPortalAccess: boolean;
   isArchived: boolean;
   updatedAt: string;
+  /** Active assignees, primary first. Empty when nobody is assigned. */
+  recruiters: string[];
+  counts: CandidateCounts;
 }
 
 export interface CandidateAssignmentSummary {
@@ -51,6 +77,7 @@ export interface CandidateDocumentSummary {
 
 export interface CandidateDetail {
   id: string;
+  businessUnitId: string;
   reference: string;
   fullName: string;
   email: string;
@@ -72,6 +99,7 @@ export interface CandidateDetail {
   assignments: CandidateAssignmentSummary[];
   marketingPeriods: MarketingPeriodSummary[];
   documents: CandidateDocumentSummary[];
+  counts: CandidateCounts;
 }
 
 export interface CandidateListPage {

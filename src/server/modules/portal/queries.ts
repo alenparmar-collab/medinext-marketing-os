@@ -1,7 +1,7 @@
 import 'server-only';
 import { createServerSupabase } from '@/lib/supabase/server';
 import { AppError } from '@/server/auth/errors';
-import type { MarketingStatus } from '@/config/statuses';
+import type { MarketingStatus, ApplicationStatus, ActivityType } from '@/config/statuses';
 
 /**
  * PORTAL DATA ACCESS — the only module a portal route may import.
@@ -134,4 +134,122 @@ export async function getMyDocuments(candidateId: string): Promise<PortalDocumen
     sizeBytes: d.size_bytes,
     uploadedAt: d.uploaded_at,
   }));
+}
+
+/* ===========================================================================
+ * BUILD 3 — applications and timeline for the portal
+ *
+ * Both scope by the caller's own candidate id, which comes from the session and
+ * never from a URL or form field. There is no function in this module that
+ * accepts a candidate id from the caller.
+ *
+ * The column projections are narrow on purpose: internal notes, source
+ * metadata, verification state and staff identities are simply not selected, so
+ * they cannot reach a portal DTO even by accident. RLS is what makes that a
+ * guarantee rather than a habit.
+ * =========================================================================== */
+
+const PORTAL_APPLICATION_COLUMNS =
+  'id, company_name, position_title, job_location, application_date, status';
+
+export interface PortalApplication {
+  id: string;
+  companyName: string;
+  positionTitle: string;
+  jobLocation: string | null;
+  applicationDate: string;
+  status: ApplicationStatus;
+}
+
+export async function getMyApplications(candidateId: string): Promise<PortalApplication[]> {
+  const supabase = await createServerSupabase();
+
+  const { data, error } = await supabase
+    .from('applications')
+    .select(PORTAL_APPLICATION_COLUMNS)
+    .eq('candidate_id', candidateId)
+    .order('application_date', { ascending: false });
+
+  if (error) throw error;
+
+  return (data ?? []).map((a) => ({
+    id: a.id,
+    companyName: a.company_name,
+    positionTitle: a.position_title,
+    jobLocation: a.job_location,
+    applicationDate: a.application_date,
+    status: a.status as ApplicationStatus,
+  }));
+}
+
+export interface PortalTimelineEntry {
+  id: string;
+  activityType: ActivityType;
+  activityDate: string;
+  summary: string | null;
+  companyName: string | null;
+}
+
+/**
+ * The candidate's own activity.
+ *
+ * The visibility filter is redundant with the RLS policy — kept because the
+ * intent should be readable at the call site as well as in the policy, and
+ * because defence in depth costs nothing here.
+ */
+export async function getMyTimeline(
+  candidateId: string,
+  limit = 100,
+): Promise<PortalTimelineEntry[]> {
+  const supabase = await createServerSupabase();
+
+  const { data, error } = await supabase
+    .from('marketing_activities')
+    .select('id, activity_type, activity_date, summary, details')
+    .eq('candidate_id', candidateId)
+    .eq('visibility', 'candidate_visible')
+    .order('activity_date', { ascending: false })
+    .limit(limit);
+
+  if (error) throw error;
+
+  return (data ?? []).map((r) => {
+    const details = (r.details ?? {}) as Record<string, unknown>;
+    return {
+      id: r.id,
+      activityType: r.activity_type as ActivityType,
+      activityDate: r.activity_date,
+      summary: r.summary,
+      companyName: typeof details.company_name === 'string' ? details.company_name : null,
+    };
+  });
+}
+
+/** Counts for the portal summary, derived from the candidate's own records. */
+export async function getMyCounts(candidateId: string): Promise<{
+  applications: number;
+  interviews: number;
+  assessments: number;
+  offers: number;
+}> {
+  const supabase = await createServerSupabase();
+
+  const [apps, activities] = await Promise.all([
+    supabase.from('applications').select('id').eq('candidate_id', candidateId),
+    supabase
+      .from('marketing_activities')
+      .select('activity_type')
+      .eq('candidate_id', candidateId)
+      .eq('visibility', 'candidate_visible'),
+  ]);
+
+  const rows = activities.data ?? [];
+  const countOf = (type: string) => rows.filter((r) => r.activity_type === type).length;
+
+  return {
+    applications: apps.data?.length ?? 0,
+    interviews: countOf('interview'),
+    assessments: countOf('assessment'),
+    offers: countOf('offer'),
+  };
 }

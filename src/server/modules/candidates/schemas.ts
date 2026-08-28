@@ -61,6 +61,7 @@ export const CandidateListParamsSchema = z.object({
   search: z.string().trim().max(120).optional(),
   status: z.enum(MARKETING_STATUSES).optional(),
   assignedTo: uuid.optional(),
+  skill: z.string().trim().max(120).optional(),
   includeArchived: z.boolean().default(false),
   cursor: z.string().optional(),
   limit: z.number().int().min(1).max(100).default(25),

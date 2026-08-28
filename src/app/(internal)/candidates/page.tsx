@@ -10,7 +10,8 @@ import { Table, TableWrap, Td, Th, Tr } from '@/components/ui/table';
 import { Button } from '@/components/ui/button';
 import { Input, Select } from '@/components/ui/field';
 import { MARKETING_STATUSES, MARKETING_STATUS_META } from '@/config/statuses';
-import { formatExperience, formatDate } from '@/lib/utils/format';
+import { formatExperience } from '@/lib/utils/format';
+import { listAssignableUsers } from '@/server/modules/reference/queries';
 
 export const metadata: Metadata = { title: 'Candidates' };
 
@@ -26,6 +27,10 @@ export default async function CandidatesPage({
   const actor = await requireInternal();
   const raw = await searchParams;
 
+  // "Mine" is the recruiter's default view: their own book, without having to
+  // pick themselves out of a list.
+  const mine = raw.mine === '1';
+
   const params = CandidateListParamsSchema.parse({
     search: typeof raw.q === 'string' ? raw.q : undefined,
     status:
@@ -33,13 +38,21 @@ export default async function CandidatesPage({
       (MARKETING_STATUSES as readonly string[]).includes(raw.status)
         ? raw.status
         : undefined,
+    skill: typeof raw.skill === 'string' && raw.skill ? raw.skill : undefined,
+    assignedTo: mine ? actor.userId : typeof raw.recruiter === 'string' && raw.recruiter ? raw.recruiter : undefined,
     includeArchived: raw.archived === '1',
     cursor: typeof raw.cursor === 'string' ? raw.cursor : undefined,
     limit: 25,
   });
 
-  const { items, nextCursor } = await listCandidates(params);
-  const isFiltered = Boolean(params.search || params.status || params.includeArchived);
+  const [{ items, nextCursor }, recruiterOptions] = await Promise.all([
+    listCandidates(params),
+    listAssignableUsers(),
+  ]);
+
+  const isFiltered = Boolean(
+    params.search || params.status || params.skill || params.assignedTo || params.includeArchived,
+  );
 
   return (
     <div className="flex flex-col gap-5">
@@ -81,8 +94,36 @@ export default async function CandidatesPage({
             ))}
           </Select>
         </div>
+        <div>
+          <label htmlFor="skill" className="sr-only">
+            Skill
+          </label>
+          <Input
+            id="skill"
+            name="skill"
+            defaultValue={params.skill ?? ''}
+            placeholder="Skill"
+            className="w-40"
+          />
+        </div>
+        <div>
+          <label htmlFor="recruiter" className="sr-only">
+            Recruiter
+          </label>
+          <Select id="recruiter" name="recruiter" defaultValue={mine ? '' : (typeof raw.recruiter === 'string' ? raw.recruiter : '')}>
+            <option value="">Any recruiter</option>
+            {recruiterOptions.map((u) => (
+              <option key={u.id} value={u.id}>
+                {u.fullName}
+              </option>
+            ))}
+          </Select>
+        </div>
         <Button type="submit" variant="secondary" size="md">
           Apply
+        </Button>
+        <Button asChild variant={mine ? 'primary' : 'ghost'} size="md">
+          <Link href={mine ? '/candidates' : '/candidates?mine=1'}>My candidates</Link>
         </Button>
         {isFiltered ? (
           <Button asChild variant="ghost" size="md">
@@ -124,23 +165,18 @@ export default async function CandidatesPage({
               <caption className="sr-only">Candidates you can access</caption>
               <thead>
                 <tr>
-                  <Th scope="col">Reference</Th>
-                  <Th scope="col">Name</Th>
-                  <Th scope="col">Primary skill</Th>
-                  <Th scope="col">Location</Th>
-                  <Th scope="col" className="text-right">
-                    Experience
-                  </Th>
-                  <Th scope="col">Status</Th>
-                  <Th scope="col">Updated</Th>
+                  <Th scope="col">Candidate</Th>
+                  <Th scope="col">Skill</Th>
+                  <Th scope="col">Recruiter</Th>
+                  <Th scope="col">Marketing status</Th>
+                  <Th scope="col" className="text-right">Applications</Th>
+                  <Th scope="col" className="text-right">Interviews</Th>
+                  <Th scope="col" className="text-right">Assessments</Th>
                 </tr>
               </thead>
               <tbody>
                 {items.map((c) => (
                   <Tr key={c.id}>
-                    <Td className="font-mono text-[12.5px] text-[var(--text-muted)]">
-                      {c.reference}
-                    </Td>
                     <Td>
                       <Link
                         href={`/candidates/${c.id}`}
@@ -153,18 +189,33 @@ export default async function CandidatesPage({
                           Archived
                         </span>
                       ) : null}
-                      <span className="block text-[12px] text-[var(--text-muted)]">{c.email}</span>
+                      <span className="block font-mono text-[12px] text-[var(--text-muted)]">
+                        {c.reference} · {formatExperience(c.experienceMonths)}
+                      </span>
                     </Td>
                     <Td className="text-[var(--text-secondary)]">{c.primarySkill ?? '—'}</Td>
-                    <Td className="text-[var(--text-secondary)]">{c.currentLocation ?? '—'}</Td>
-                    <Td className="tabular text-right text-[var(--text-secondary)]">
-                      {formatExperience(c.experienceMonths)}
+                    <Td className="text-[var(--text-secondary)]">
+                      {c.recruiters.length > 0 ? (
+                        c.recruiters[0]
+                      ) : (
+                        <span className="text-[var(--text-muted)]">Unassigned</span>
+                      )}
+                      {c.recruiters.length > 1 ? (
+                        <span className="text-[var(--text-muted)]"> +{c.recruiters.length - 1}</span>
+                      ) : null}
                     </Td>
                     <Td>
                       <MarketingStatusBadge status={c.marketingStatus} />
                     </Td>
-                    <Td className="tabular text-[13px] text-[var(--text-muted)]">
-                      {formatDate(c.updatedAt)}
+                    {/* Counts are derived from records. Nothing here is stored or typed in. */}
+                    <Td className="tabular text-right text-[var(--text-primary)]">
+                      {c.counts.applications}
+                    </Td>
+                    <Td className="tabular text-right text-[var(--text-primary)]">
+                      {c.counts.interviews}
+                    </Td>
+                    <Td className="tabular text-right text-[var(--text-primary)]">
+                      {c.counts.assessments}
                     </Td>
                   </Tr>
                 ))}
@@ -184,6 +235,8 @@ export default async function CandidatesPage({
                     query: {
                       ...(params.search ? { q: params.search } : {}),
                       ...(params.status ? { status: params.status } : {}),
+                      ...(params.skill ? { skill: params.skill } : {}),
+                      ...(mine ? { mine: '1' } : {}),
                       cursor: nextCursor,
                     },
                   }}

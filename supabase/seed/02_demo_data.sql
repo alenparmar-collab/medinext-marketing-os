@@ -166,19 +166,19 @@ on conflict (id) do nothing;
 -- ---------------------------------------------------------------------------
 insert into public.marketing_periods
   (id, business_unit_id, candidate_id, starts_on, status, objective, opened_by) values
-  ('00000000-0000-4000-c000-000000000001', '00000000-0000-4000-9000-000000000001',
+  ('00000000-0000-4000-8c00-000000000001', '00000000-0000-4000-9000-000000000001',
    '00000000-0000-4000-a000-000000000001', current_date - 55, 'active',
    'Clinical data management roles, UK and remote.', '00000000-0000-4000-8000-000000000002'),
-  ('00000000-0000-4000-c000-000000000002', '00000000-0000-4000-9000-000000000001',
+  ('00000000-0000-4000-8c00-000000000002', '00000000-0000-4000-9000-000000000001',
    '00000000-0000-4000-a000-000000000002', current_date - 35, 'ready_for_marketing',
    'Regulatory affairs, UK submissions experience.', '00000000-0000-4000-8000-000000000002'),
-  ('00000000-0000-4000-c000-000000000003', '00000000-0000-4000-9000-000000000001',
+  ('00000000-0000-4000-8c00-000000000003', '00000000-0000-4000-9000-000000000001',
    '00000000-0000-4000-a000-000000000003', current_date - 25, 'active',
    'Pharmacovigilance, Ireland.', '00000000-0000-4000-8000-000000000002'),
-  ('00000000-0000-4000-c000-000000000004', '00000000-0000-4000-9000-000000000001',
+  ('00000000-0000-4000-8c00-000000000004', '00000000-0000-4000-9000-000000000001',
    '00000000-0000-4000-a000-000000000005', current_date - 90, 'on_hold',
    'Medical writing. Paused at the candidate''s request.', '00000000-0000-4000-8000-000000000002'),
-  ('00000000-0000-4000-c000-000000000005', '00000000-0000-4000-9000-000000000002',
+  ('00000000-0000-4000-8c00-000000000005', '00000000-0000-4000-9000-000000000002',
    '00000000-0000-4000-a000-000000000006', current_date - 18, 'active',
    'Clinical operations, Japan.', '00000000-0000-4000-8000-000000000001')
 on conflict (id) do nothing;
@@ -186,7 +186,7 @@ on conflict (id) do nothing;
 -- A closed historical period on Priya, proving one candidate carries several.
 insert into public.marketing_periods
   (id, business_unit_id, candidate_id, starts_on, ends_on, status, objective, opened_by, closed_by, closed_at) values
-  ('00000000-0000-4000-c000-000000000006', '00000000-0000-4000-9000-000000000001',
+  ('00000000-0000-4000-8c00-000000000006', '00000000-0000-4000-9000-000000000001',
    '00000000-0000-4000-a000-000000000001', current_date - 400, current_date - 300, 'completed',
    'Previous engagement, closed.', '00000000-0000-4000-8000-000000000002',
    '00000000-0000-4000-8000-000000000002', now() - interval '300 days')
@@ -202,32 +202,32 @@ insert into public.documents (
   id, business_unit_id, candidate_id, document_type, file_name, storage_path,
   mime_type, size_bytes, checksum_sha256, visibility, uploaded_by
 ) values
-  ('00000000-0000-4000-d000-000000000001', '00000000-0000-4000-9000-000000000001',
+  ('00000000-0000-4000-8d00-000000000001', '00000000-0000-4000-9000-000000000001',
    '00000000-0000-4000-a000-000000000001', 'resume', 'priya-raman-resume.pdf',
-   '00000000-0000-4000-a000-000000000001/resume/00000000-0000-4000-d000-000000000001-priya-raman-resume.pdf',
+   '00000000-0000-4000-a000-000000000001/resume/00000000-0000-4000-8d00-000000000001-priya-raman-resume.pdf',
    'application/pdf', 184320, repeat('a', 64), 'candidate_visible',
    '00000000-0000-4000-8000-000000000003'),
 
-  ('00000000-0000-4000-d000-000000000002', '00000000-0000-4000-9000-000000000001',
+  ('00000000-0000-4000-8d00-000000000002', '00000000-0000-4000-9000-000000000001',
    '00000000-0000-4000-a000-000000000001', 'formatted_resume', 'priya-raman-formatted-internal.pdf',
-   '00000000-0000-4000-a000-000000000001/formatted_resume/00000000-0000-4000-d000-000000000002-priya-raman-formatted-internal.pdf',
+   '00000000-0000-4000-a000-000000000001/formatted_resume/00000000-0000-4000-8d00-000000000002-priya-raman-formatted-internal.pdf',
    'application/pdf', 201728, repeat('b', 64), 'internal',
    '00000000-0000-4000-8000-000000000003'),
 
-  ('00000000-0000-4000-d000-000000000003', '00000000-0000-4000-9000-000000000001',
+  ('00000000-0000-4000-8d00-000000000003', '00000000-0000-4000-9000-000000000001',
    '00000000-0000-4000-a000-000000000003', 'resume', 'lucia-ferrari-resume.pdf',
-   '00000000-0000-4000-a000-000000000003/resume/00000000-0000-4000-d000-000000000003-lucia-ferrari-resume.pdf',
+   '00000000-0000-4000-a000-000000000003/resume/00000000-0000-4000-8d00-000000000003-lucia-ferrari-resume.pdf',
    'application/pdf', 176128, repeat('c', 64), 'candidate_visible',
    '00000000-0000-4000-8000-000000000004')
 on conflict (id) do nothing;
 
 update public.candidates
-   set primary_resume_document_id = '00000000-0000-4000-d000-000000000001'
+   set primary_resume_document_id = '00000000-0000-4000-8d00-000000000001'
  where id = '00000000-0000-4000-a000-000000000001'
    and primary_resume_document_id is null;
 
 update public.candidates
-   set primary_resume_document_id = '00000000-0000-4000-d000-000000000003'
+   set primary_resume_document_id = '00000000-0000-4000-8d00-000000000003'
  where id = '00000000-0000-4000-a000-000000000003'
    and primary_resume_document_id is null;
 
@@ -235,7 +235,7 @@ update public.candidates
 -- Internal notes — the payload that must never reach a candidate.
 -- ---------------------------------------------------------------------------
 insert into public.candidate_internal_notes (id, business_unit_id, candidate_id, body, created_by) values
-  ('00000000-0000-4000-e000-000000000001', '00000000-0000-4000-9000-000000000001',
+  ('00000000-0000-4000-8e00-000000000001', '00000000-0000-4000-9000-000000000001',
    '00000000-0000-4000-a000-000000000001',
    'INTERNAL ONLY — demo note. If this string is ever visible in the candidate portal, the RLS test suite has failed.',
    '00000000-0000-4000-8000-000000000003')

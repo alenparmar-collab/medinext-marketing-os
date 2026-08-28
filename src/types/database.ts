@@ -19,7 +19,13 @@
  * interfaces makes the schema fail that constraint and every query silently
  * resolves to `never`. Keep them as type aliases.
  */
-import type { MarketingStatus, AssignmentType, DocumentVisibility } from '@/config/statuses';
+import type {
+  MarketingStatus,
+  AssignmentType,
+  DocumentVisibility,
+  ApplicationStatus,
+  ActivityType,
+} from '@/config/statuses';
 import type { RoleCode } from '@/config/permissions';
 
 export type SourceKind = 'manual' | 'seed' | 'excel_import' | 'email_event' | 'system' | 'api';
@@ -151,6 +157,89 @@ export type CandidateInternalNoteRow = {
   updated_at: string;
 }
 
+export type ApplicationRow = {
+  id: string;
+  business_unit_id: string;
+  candidate_id: string;
+  marketing_period_id: string | null;
+  company_name: string;
+  position_title: string;
+  job_id: string | null;
+  job_url: string | null;
+  job_location: string | null;
+  application_date: string;
+  status: ApplicationStatus;
+  notes: string | null;
+  source_type: SourceKind;
+  source_reference: string | null;
+  verified_at: string | null;
+  verified_by: string | null;
+  is_verified: boolean;
+  created_by: string | null;
+  updated_by: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ApplicationStatusHistoryRow = {
+  id: string;
+  application_id: string;
+  from_status: ApplicationStatus | null;
+  to_status: ApplicationStatus;
+  changed_at: string;
+  changed_by: string | null;
+  source_type: SourceKind;
+  source_reference: string | null;
+  note: string | null;
+};
+
+export type MarketingActivityRow = {
+  id: string;
+  business_unit_id: string;
+  candidate_id: string;
+  application_id: string | null;
+  marketing_period_id: string | null;
+  activity_type: ActivityType;
+  activity_date: string;
+  summary: string | null;
+  details: Record<string, unknown>;
+  source_type: SourceKind;
+  source_reference: string | null;
+  verified_at: string | null;
+  verified_by: string | null;
+  is_verified: boolean;
+  visibility: DocumentVisibility;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+/** Row shape returned by public.candidate_counts(uuid[]). */
+export type CandidateCountsRow = {
+  candidate_id: string;
+  applications: number;
+  recruiter_responses: number;
+  interviews: number;
+  assessments: number;
+  rejections: number;
+  offers: number;
+};
+
+/** Row shape returned by public.candidate_timeline(uuid). */
+export type CandidateTimelineRow = {
+  occurred_at: string;
+  entry_kind: string;
+  entry_id: string;
+  title: string | null;
+  detail: string | null;
+  company_name: string | null;
+  application_id: string | null;
+  status: string | null;
+  source_type: SourceKind;
+  is_verified: boolean;
+  actor_name: string | null;
+};
+
 export type RolePermissionRow = {
   role_code: RoleCode;
   permission_code: string;
@@ -176,9 +265,24 @@ export type Database = {
       marketing_periods: TableDef<MarketingPeriodRow>;
       documents: TableDef<DocumentRow>;
       document_types: TableDef<DocumentTypeRow>;
+      applications: TableDef<ApplicationRow>;
+      application_status_history: TableDef<ApplicationStatusHistoryRow>;
+      marketing_activities: TableDef<MarketingActivityRow>;
     };
     Views: { [_ in never]: never };
     Functions: {
+      change_application_status: {
+        Args: { p_application_id: string; p_status: ApplicationStatus; p_note?: string | null };
+        Returns: ApplicationStatus;
+      };
+      candidate_counts: {
+        Args: { p_candidate_ids: string[] };
+        Returns: CandidateCountsRow[];
+      };
+      candidate_timeline: {
+        Args: { p_candidate_id: string };
+        Returns: CandidateTimelineRow[];
+      };
       record_audit_event: {
         Args: {
           p_action: string;
@@ -191,6 +295,8 @@ export type Database = {
     };
     Enums: {
       marketing_status: MarketingStatus;
+      application_status: ApplicationStatus;
+      activity_type: ActivityType;
       assignment_type: AssignmentType;
       document_visibility: DocumentVisibility;
       user_status: UserStatus;

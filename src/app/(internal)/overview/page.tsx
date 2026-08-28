@@ -18,11 +18,15 @@ export default async function OverviewPage() {
   const actor = await requireInternal();
   const metrics = await getOverviewMetrics(actor.userId);
 
+  // Every figure is counted from records. Nothing here is a stored total, and
+  // nobody types these numbers in.
   const tiles = [
     { label: 'Candidates', value: metrics.totalCandidates, hint: 'Visible to you, excluding archived' },
+    { label: 'Applications', value: metrics.applications, hint: `${metrics.applicationsLast30Days} in the last 30 days` },
+    { label: 'Open applications', value: metrics.openApplications, hint: 'Not rejected, withdrawn or closed' },
+    { label: 'Interviews', value: metrics.interviews, hint: 'Recorded across your candidates' },
     { label: 'Live marketing periods', value: metrics.activePeriods, hint: 'Active or ready for marketing' },
     { label: 'Assigned to you', value: metrics.myActiveAssignments, hint: 'Current assignments' },
-    { label: 'Documents', value: metrics.documentCount, hint: 'Across candidates you can access' },
   ];
 
   return (
@@ -37,7 +41,7 @@ export default async function OverviewPage() {
         }
       />
 
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
         {tiles.map((tile) => (
           <Card key={tile.label}>
             <CardBody>
