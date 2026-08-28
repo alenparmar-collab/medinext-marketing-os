@@ -25,6 +25,21 @@ else
   admin_run() { eval "$*"; }
 fi
 
+# The scratch server may not be running in a fresh container. Try to bring it up
+# rather than failing with a bare "connection refused".
+ensure_server() {
+  if psql_run "-tAc 'select 1'" >/dev/null 2>&1; then return 0; fi
+  if command -v pg_ctlcluster >/dev/null 2>&1; then
+    pg_ctlcluster 16 main start >/dev/null 2>&1 || true
+    sleep 2
+  fi
+  if ! psql_run "-tAc 'select 1'" >/dev/null 2>&1; then
+    echo "PostgreSQL is not reachable. Start it, or set PGHOST/PGPORT/PGUSER." >&2
+    exit 1
+  fi
+}
+ensure_server
+
 echo "==> Recreating scratch database: ${TEST_DB}"
 admin_run "dropdb --if-exists ${TEST_DB}" >/dev/null 2>&1 || true
 admin_run "createdb ${TEST_DB}"

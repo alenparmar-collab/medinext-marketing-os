@@ -1,16 +1,17 @@
-import { dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { FlatCompat } from '@eslint/eslintrc';
+import nextCoreWebVitals from 'eslint-config-next/core-web-vitals';
+import nextTypescript from 'eslint-config-next/typescript';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-const compat = new FlatCompat({ baseDirectory: __dirname });
+/**
+ * Two of the rules below are architectural boundaries, not style preferences.
+ * They fail the build rather than relying on code review to catch a mistake
+ * that would be a data leak.
+ */
+const config = [
+  { ignores: ['.next/**', 'node_modules/**', 'next-env.d.ts', 'coverage/**'] },
 
-const eslintConfig = [
-  ...compat.extends('next/core-web-vitals', 'next/typescript'),
-  {
-    ignores: ['.next/**', 'node_modules/**', 'next-env.d.ts', 'src/types/database.ts'],
-  },
+  ...nextCoreWebVitals,
+  ...nextTypescript,
+
   {
     rules: {
       '@typescript-eslint/no-unused-vars': [
@@ -18,17 +19,26 @@ const eslintConfig = [
         { argsIgnorePattern: '^_', varsIgnorePattern: '^_' },
       ],
       '@typescript-eslint/no-explicit-any': 'error',
+    },
+  },
+
+  {
+    /**
+     * BOUNDARY A — service-role code never reaches a route or a client bundle.
+     *
+     * docs/architecture/05 §7. The key bypasses RLS entirely, so the only
+     * sanctioned entry point is withServiceRole(), which audits every use.
+     */
+    files: ['src/app/**/*.{ts,tsx}', 'src/components/**/*.{ts,tsx}'],
+    rules: {
       'no-restricted-imports': [
         'error',
         {
           patterns: [
             {
-              // Enforces docs/architecture/05 §7: the service role key never reaches
-              // a module that can be bundled for the browser.
-              group: ['**/server/privileged/*', '@/server/privileged/*'],
-              importNames: ['createServiceClient'],
+              group: ['@/server/privileged/service-client', '@/server/privileged*'],
               message:
-                'Import withServiceRole() instead — direct service-client access bypasses the audit wrapper.',
+                'Do not import service-role code from routes or components. Call it from a server module through withServiceRole().',
             },
           ],
         },
@@ -36,7 +46,15 @@ const eslintConfig = [
     },
   },
   {
-    // Enforces docs/architecture/08 §2: portal routes may not reach internal data modules.
+    /**
+     * BOUNDARY B — the candidate portal may not reach internal data modules.
+     *
+     * docs/architecture/08 §2. One of four independent isolation layers; this
+     * is the one that catches a developer reusing an internal query by habit.
+     *
+     * Declared AFTER the app-wide block on purpose: flat config lets a later
+     * block replace the same rule, so this must be last or it is silently lost.
+     */
     files: ['src/app/(portal)/**/*.{ts,tsx}'],
     rules: {
       'no-restricted-imports': [
@@ -44,19 +62,23 @@ const eslintConfig = [
         {
           patterns: [
             {
-              group: ['@/server/modules/*', '!@/server/modules/portal', '!@/server/modules/portal/*'],
+              group: [
+                '@/server/modules/candidates*',
+                '@/server/modules/marketing*',
+                '@/server/modules/assignments*',
+                '@/server/modules/dashboard*',
+                '@/server/modules/reference*',
+                '@/server/privileged*',
+              ],
               message:
                 'Portal routes must query @/server/modules/portal only (docs/architecture/08 §2).',
-            },
-            {
-              group: ['@/server/privileged', '@/server/privileged/*'],
-              message: 'Portal routes must never touch service-role code.',
             },
           ],
         },
       ],
     },
   },
+
 ];
 
-export default eslintConfig;
+export default config;

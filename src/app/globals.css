@@ -1,0 +1,177 @@
+@import 'tailwindcss';
+
+/* ===========================================================================
+   MEDINEXT DESIGN TOKENS
+   Implements docs/design/design-language.md.
+
+   A near-monochrome interface with one brand accent and a small set of
+   semantic colours that appear only when they carry meaning. Surfaces are
+   separated by BORDERS, not shadows; shadow is reserved for genuinely floating
+   layers.
+
+   Build 3 establishes the full design system on top of these tokens. Nothing
+   below should be overridden ad hoc in a component.
+   =========================================================================== */
+
+@theme {
+  /* Neutral ramp — carries the entire interface.
+     Biased very slightly cool so it reads as chosen rather than inherited. */
+  --color-n-0: #ffffff;
+  --color-n-25: #fcfcfd;
+  --color-n-50: #f8f9fa;
+  --color-n-100: #f1f3f5;
+  --color-n-200: #e4e7eb;
+  --color-n-300: #d3d7dc;
+  --color-n-400: #a6acb5;
+  --color-n-500: #6b7480;
+  --color-n-600: #545c66;
+  --color-n-700: #3a424c;
+  --color-n-800: #242a32;
+  --color-n-900: #14181d;
+
+  /* Brand accent. Roughly one element per screen. */
+  --color-accent-50: #eef5fa;
+  --color-accent-100: #d9e8f3;
+  --color-accent-500: #1670a5;
+  --color-accent-600: #0f5c8c;
+  --color-accent-700: #0c4a70;
+
+  /* Semantic. Meaning only, never decoration. Always paired with a word. */
+  --color-positive: #1a7f52;
+  --color-positive-bg: #e7f3ec;
+  --color-caution: #8f5e00;
+  --color-caution-bg: #f8f0dd;
+  --color-critical: #b32219;
+  --color-critical-bg: #fbeae8;
+  --color-info: #1e5fa8;
+  --color-info-bg: #e8f0fa;
+
+  /* Radius: nothing larger than 6px. Heavy rounding reads consumer. */
+  --radius-xs: 3px;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+
+  --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, monospace;
+}
+
+/* Semantic surface tokens. Components reference these, never the ramp
+   directly, so the dark theme is a token swap rather than a rewrite. */
+:root {
+  --surface-page: var(--color-n-25);
+  --surface-raised: var(--color-n-0);
+  --surface-sunken: var(--color-n-50);
+  --surface-hover: var(--color-n-100);
+  --border-subtle: var(--color-n-200);
+  --border-strong: var(--color-n-300);
+  --text-primary: var(--color-n-900);
+  --text-secondary: var(--color-n-600);
+  --text-muted: var(--color-n-500);
+  --text-inverse: var(--color-n-0);
+  --focus-ring: var(--color-accent-600);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --surface-page: #0f1216;
+    --surface-raised: #161a20;
+    --surface-sunken: #1c2128;
+    --surface-hover: #222831;
+    --border-subtle: #272d35;
+    --border-strong: #39424d;
+    --text-primary: #e7eaee;
+    --text-secondary: #b6bec8;
+    --text-muted: #8a939e;
+    --text-inverse: #0f1216;
+    --focus-ring: #6fb2dd;
+
+    --color-accent-50: #152531;
+    --color-accent-100: #1b3a4e;
+    --color-accent-500: #4e9ccd;
+    --color-accent-600: #6fb2dd;
+    --color-accent-700: #8cc4e6;
+
+    --color-positive: #5cc191;
+    --color-positive-bg: #132420;
+    --color-caution: #d9a63d;
+    --color-caution-bg: #241d10;
+    --color-critical: #e88176;
+    --color-critical-bg: #261614;
+    --color-info: #7fb2e8;
+    --color-info-bg: #14202e;
+  }
+}
+
+:root[data-theme='dark'] {
+  --surface-page: #0f1216;
+  --surface-raised: #161a20;
+  --surface-sunken: #1c2128;
+  --surface-hover: #222831;
+  --border-subtle: #272d35;
+  --border-strong: #39424d;
+  --text-primary: #e7eaee;
+  --text-secondary: #b6bec8;
+  --text-muted: #8a939e;
+  --text-inverse: #0f1216;
+  --focus-ring: #6fb2dd;
+
+  --color-accent-500: #4e9ccd;
+  --color-accent-600: #6fb2dd;
+  --color-accent-700: #8cc4e6;
+  --color-accent-50: #152531;
+
+  --color-positive: #5cc191;
+  --color-positive-bg: #132420;
+  --color-caution: #d9a63d;
+  --color-caution-bg: #241d10;
+  --color-critical: #e88176;
+  --color-critical-bg: #261614;
+  --color-info: #7fb2e8;
+  --color-info-bg: #14202e;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--surface-page);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  /* 14px body, not 16: this is a dense professional tool used all day on
+     desktop, where scanning matters more than comfortable reading. */
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Columns of figures visibly jitter without this. Cheapest thing that makes an
+   interface look professionally made. */
+table,
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Focus rings survive the design pass. Removing one because it looks untidy is
+   not a trade that is available. */
+:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-xs);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
