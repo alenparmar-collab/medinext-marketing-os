@@ -27,6 +27,13 @@ truncate test.results;
 
 \set EU_UNIT 00000000-0000-4000-9000-000000000001
 
+-- Build 3: applications and activities
+\set APP_PRIYA_1 00000000-0000-4000-f000-000000000001
+\set APP_LUCIA_1 00000000-0000-4000-f000-000000000007
+\set APP_NAOMI   00000000-0000-4000-f000-00000000000b
+\set APP_HIROSHI 00000000-0000-4000-f000-00000000000c
+\set ACT_NOTE    00000000-0000-4000-1000-000000000006
+
 -- ---------------------------------------------------------------------------
 -- SECTION 1 — Unauthenticated access
 -- ---------------------------------------------------------------------------
@@ -299,6 +306,268 @@ begin
           case when v_denied then 'ok' else 'the delete was accepted' end);
 end $$;
 
+-- ===========================================================================
+-- BUILD 3 — Applications, activities, timeline
+-- ===========================================================================
+
+-- ---------------------------------------------------------------------------
+-- SECTION 11 — Internal scope over applications
+-- ---------------------------------------------------------------------------
+select test.check('applications', 'admin sees every application in both units',
+  test.count_as(:'ADMIN', 'select count(*) from public.applications'), 12::bigint);
+
+select test.check('applications', 'manager sees their unit''s 11 applications only',
+  test.count_as(:'MANAGER', 'select count(*) from public.applications'), 11::bigint);
+
+select test.check('applications', 'recruiter Salas sees only their candidates'' 6 applications',
+  test.count_as(:'SALAS', 'select count(*) from public.applications'), 6::bigint);
+
+select test.check('applications', 'recruiter Halvorsen sees only their candidates'' 4 applications',
+  test.count_as(:'HALVORSEN', 'select count(*) from public.applications'), 4::bigint);
+
+select test.check('applications', 'recruiter cannot see an application on an unassigned candidate',
+  test.count_as(:'SALAS',
+    'select count(*) from public.applications where id = ' || quote_literal(:'APP_NAOMI')), 0::bigint);
+
+select test.check('applications', 'manager CAN see the unassigned candidate''s application',
+  test.count_as(:'MANAGER',
+    'select count(*) from public.applications where id = ' || quote_literal(:'APP_NAOMI')), 1::bigint);
+
+select test.check('applications', 'recruiter cannot see a colleague''s candidate''s application',
+  test.count_as(:'SALAS',
+    'select count(*) from public.applications where id = ' || quote_literal(:'APP_LUCIA_1')), 0::bigint);
+
+select test.check('applications', 'cross-unit: EU manager cannot see the APAC application',
+  test.count_as(:'MANAGER',
+    'select count(*) from public.applications where id = ' || quote_literal(:'APP_HIROSHI')), 0::bigint);
+
+select test.check('applications', 'cross-unit: APAC recruiter sees only their own unit''s application',
+  test.count_as(:'ROSSI', 'select count(*) from public.applications'), 1::bigint);
+
+-- ---------------------------------------------------------------------------
+-- SECTION 12 — CANDIDATE ISOLATION over applications  ***critical***
+-- ---------------------------------------------------------------------------
+select test.check('isolation', 'candidate Priya sees her own 4 applications',
+  test.count_as(:'PRIYA_USER', 'select count(*) from public.applications'), 4::bigint);
+
+select test.check('isolation', 'CANDIDATE A CANNOT READ APPLICATIONS OF CANDIDATE B',
+  test.count_as(:'PRIYA_USER',
+    'select count(*) from public.applications where candidate_id = ' || quote_literal(:'LUCIA')), 0::bigint);
+
+select test.check('isolation', 'candidate B cannot read candidate A''s applications (reverse)',
+  test.count_as(:'LUCIA_USER',
+    'select count(*) from public.applications where candidate_id = ' || quote_literal(:'PRIYA')), 0::bigint);
+
+select test.check('isolation', 'candidate cannot read a named application belonging to another candidate',
+  test.count_as(:'PRIYA_USER',
+    'select count(*) from public.applications where id = ' || quote_literal(:'APP_LUCIA_1')), 0::bigint);
+
+select test.check('isolation', 'candidate cannot enumerate applications by company name',
+  test.count_as(:'PRIYA_USER',
+    'select count(*) from public.applications where company_name is not null'), 4::bigint);
+
+select test.check('isolation', 'candidate cannot read application status history',
+  test.count_as(:'PRIYA_USER', 'select count(*) from public.application_status_history'), 0::bigint);
+
+-- ---------------------------------------------------------------------------
+-- SECTION 13 — CANDIDATE ISOLATION over activities  ***critical***
+-- ---------------------------------------------------------------------------
+select test.check('isolation', 'CANDIDATE A CANNOT READ ACTIVITIES OF CANDIDATE B',
+  test.count_as(:'PRIYA_USER',
+    'select count(*) from public.marketing_activities where candidate_id = ' || quote_literal(:'LUCIA')), 0::bigint);
+
+select test.check('isolation', 'candidate B cannot read candidate A''s activities (reverse)',
+  test.count_as(:'LUCIA_USER',
+    'select count(*) from public.marketing_activities where candidate_id = ' || quote_literal(:'PRIYA')), 0::bigint);
+
+select test.check('isolation', 'CANDIDATE CANNOT READ INTERNAL NOTE ACTIVITIES',
+  test.count_as(:'PRIYA_USER',
+    'select count(*) from public.marketing_activities where activity_type = ''note'''), 0::bigint);
+
+select test.check('isolation', 'candidate cannot read the seeded internal note activity by id',
+  test.count_as(:'PRIYA_USER',
+    'select count(*) from public.marketing_activities where id = ' || quote_literal(:'ACT_NOTE')), 0::bigint);
+
+select test.check('isolation', 'candidate sees no internal-visibility activity at all',
+  test.count_as(:'PRIYA_USER',
+    'select count(*) from public.marketing_activities where visibility = ''internal'''), 0::bigint);
+
+select test.check('isolation', 'internal staff DO see the internal note activity',
+  test.count_as(:'SALAS',
+    'select count(*) from public.marketing_activities where id = ' || quote_literal(:'ACT_NOTE')), 1::bigint);
+
+-- The visibility trigger is a structural guarantee, not a convention.
+do $$
+declare v_vis text;
+begin
+  insert into public.marketing_activities
+    (id, business_unit_id, candidate_id, activity_type, summary, visibility, created_by)
+  values ('00000000-0000-4000-1000-0000000000ff',
+          '00000000-0000-4000-9000-000000000001',
+          '00000000-0000-4000-a000-000000000001',
+          'note', 'attempted candidate-visible note', 'candidate_visible',
+          '00000000-0000-4000-8000-000000000003');
+
+  select visibility into v_vis from public.marketing_activities
+   where id = '00000000-0000-4000-1000-0000000000ff';
+
+  insert into test.results (section, name, passed, detail)
+  values ('isolation', 'a note forced candidate_visible is coerced back to internal',
+          v_vis = 'internal', coalesce('visibility=' || v_vis, 'null'));
+end $$;
+
+-- ---------------------------------------------------------------------------
+-- SECTION 14 — Write authorization on applications and activities
+-- ---------------------------------------------------------------------------
+select test.check('writes', 'recruiter CAN create an application for their candidate',
+  test.write_allowed(:'SALAS',
+    'insert into public.applications (business_unit_id, candidate_id, company_name, position_title) values ('
+    || quote_literal(:'EU_UNIT') || ', ' || quote_literal(:'PRIYA')
+    || ', ''Test Co'', ''Test Role'')'), true);
+
+select test.check('writes', 'recruiter CANNOT create an application for a colleague''s candidate',
+  test.write_denied(:'SALAS',
+    'insert into public.applications (business_unit_id, candidate_id, company_name, position_title) values ('
+    || quote_literal(:'EU_UNIT') || ', ' || quote_literal(:'LUCIA')
+    || ', ''Should Fail'', ''Test Role'')'), true);
+
+select test.check('writes', 'recruiter CANNOT create an application in another business unit',
+  test.write_denied(:'SALAS',
+    'insert into public.applications (business_unit_id, candidate_id, company_name, position_title) values ('
+    || quote_literal(:'EU_UNIT') || ', ' || quote_literal(:'HIROSHI')
+    || ', ''Should Fail'', ''Test Role'')'), true);
+
+select test.check('writes', 'recruiter CAN update their candidate''s application status',
+  test.write_allowed(:'SALAS',
+    'update public.applications set status = ''screening'' where id = ' || quote_literal(:'APP_PRIYA_1')), true);
+
+select test.check('writes', 'recruiter CANNOT update a colleague''s candidate''s application',
+  test.write_denied(:'SALAS',
+    'update public.applications set status = ''closed'' where id = ' || quote_literal(:'APP_LUCIA_1')), true);
+
+select test.check('writes', 'recruiter CANNOT delete an application (lacks application.delete)',
+  test.write_denied(:'SALAS',
+    'delete from public.applications where id = ' || quote_literal(:'APP_PRIYA_1')), true);
+
+select test.check('writes', 'CANDIDATE CANNOT CREATE AN APPLICATION',
+  test.write_denied(:'PRIYA_USER',
+    'insert into public.applications (business_unit_id, candidate_id, company_name, position_title) values ('
+    || quote_literal(:'EU_UNIT') || ', ' || quote_literal(:'PRIYA')
+    || ', ''Self Added'', ''Role'')'), true);
+
+select test.check('writes', 'CANDIDATE CANNOT EDIT THEIR OWN APPLICATION',
+  test.write_denied(:'PRIYA_USER',
+    'update public.applications set status = ''offer'' where id = ' || quote_literal(:'APP_PRIYA_1')), true);
+
+select test.check('writes', 'candidate cannot delete their own application',
+  test.write_denied(:'PRIYA_USER',
+    'delete from public.applications where id = ' || quote_literal(:'APP_PRIYA_1')), true);
+
+select test.check('writes', 'CANDIDATE CANNOT CREATE MARKETING ACTIVITY',
+  test.write_denied(:'PRIYA_USER',
+    'insert into public.marketing_activities (business_unit_id, candidate_id, activity_type, summary) values ('
+    || quote_literal(:'EU_UNIT') || ', ' || quote_literal(:'PRIYA')
+    || ', ''interview'', ''Self logged'')'), true);
+
+select test.check('writes', 'candidate cannot make an internal activity visible to themselves',
+  test.write_denied(:'PRIYA_USER',
+    'update public.marketing_activities set visibility = ''candidate_visible'' where visibility = ''internal'''), true);
+
+select test.check('writes', 'candidate cannot forge application status history',
+  test.write_denied(:'PRIYA_USER',
+    'insert into public.application_status_history (application_id, to_status) values ('
+    || quote_literal(:'APP_PRIYA_1') || ', ''offer'')'), true);
+
+select test.check('writes', 'nobody can edit status history, not even a manager',
+  test.write_denied(:'MANAGER',
+    'update public.application_status_history set to_status = ''offer'''), true);
+
+select test.check('writes', 'nobody can delete status history, not even a manager',
+  test.write_denied(:'MANAGER',
+    'delete from public.application_status_history'), true);
+
+select test.check('writes', 'recruiter CAN log a manual activity for their candidate',
+  test.write_allowed(:'SALAS',
+    'insert into public.marketing_activities (business_unit_id, candidate_id, activity_type, summary) values ('
+    || quote_literal(:'EU_UNIT') || ', ' || quote_literal(:'PRIYA')
+    || ', ''follow_up'', ''Called the vendor'')'), true);
+
+-- ---------------------------------------------------------------------------
+-- SECTION 15 — Automation produced the derived records
+-- ---------------------------------------------------------------------------
+select test.check('automation', 'every application has an opening status-history row',
+  (select count(*) from public.applications a
+    where not exists (
+      select 1 from public.application_status_history h
+       where h.application_id = a.id and h.from_status is null)), 0::bigint);
+
+select test.check('automation', 'every application produced an application_submitted activity',
+  (select count(*) from public.applications a
+    where not exists (
+      select 1 from public.marketing_activities m
+       where m.application_id = a.id and m.activity_type = 'application_submitted')), 0::bigint);
+
+select test.check('automation', 'the recruiter status change above wrote a history row',
+  (select count(*) > 0 from public.application_status_history
+    where application_id = '00000000-0000-4000-f000-000000000001'
+      and to_status = 'screening'
+      and changed_by = '00000000-0000-4000-8000-000000000003'), true);
+
+select test.check('automation', 'the recruiter status change above wrote a status_change activity',
+  (select count(*) > 0 from public.marketing_activities
+    where application_id = '00000000-0000-4000-f000-000000000001'
+      and activity_type = 'status_change'), true);
+
+select test.check('automation', 'application changes are captured in the audit log',
+  (select count(*) > 0 from audit.audit_logs
+    where entity_type = 'applications' and action = 'update'
+      and actor_id = '00000000-0000-4000-8000-000000000003'), true);
+
+select test.check('automation', 'activity inserts are captured in the audit log',
+  (select count(*) > 0 from audit.audit_logs
+    where entity_type = 'marketing_activities' and action = 'insert'), true);
+
+-- ---------------------------------------------------------------------------
+-- SECTION 16 — Derived counts and timeline respect RLS
+-- ---------------------------------------------------------------------------
+select test.check('aggregation', 'counts are derived from records, not stored totals',
+  test.count_as(:'SALAS',
+    'select applications from public.candidate_counts(array[' || quote_literal(:'PRIYA') || ']::uuid[])'),
+  5::bigint);
+
+select test.check('aggregation', 'a recruiter gets zero counts for a candidate they cannot access',
+  test.count_as(:'SALAS',
+    'select coalesce((select applications from public.candidate_counts(array['
+    || quote_literal(:'LUCIA') || ']::uuid[])), 0)'), 0::bigint);
+
+select test.check('aggregation', 'interview counts come from activity records',
+  test.count_as(:'HALVORSEN',
+    'select interviews from public.candidate_counts(array[' || quote_literal(:'LUCIA') || ']::uuid[])'),
+  1::bigint);
+
+select test.check('timeline', 'internal staff see the internal note on the timeline',
+  test.count_as(:'SALAS',
+    'select count(*) from public.candidate_timeline(' || quote_literal(:'PRIYA')
+    || ') where entry_kind = ''note'' and entry_id = ' || quote_literal(:'ACT_NOTE')),
+  1::bigint);
+
+select test.check('timeline', 'CANDIDATE TIMELINE EXCLUDES INTERNAL NOTES',
+  test.count_as(:'PRIYA_USER',
+    'select count(*) from public.candidate_timeline(' || quote_literal(:'PRIYA') || ') where entry_kind = ''note'''),
+  0::bigint);
+
+select test.check('timeline', 'candidate sees their own timeline entries',
+  (test.count_as(:'PRIYA_USER',
+    'select count(*) from public.candidate_timeline(' || quote_literal(:'PRIYA') || ')') > 0), true);
+
+select test.check('timeline', 'CANDIDATE A GETS NOTHING FROM THE TIMELINE OF CANDIDATE B',
+  test.count_as(:'PRIYA_USER',
+    'select count(*) from public.candidate_timeline(' || quote_literal(:'LUCIA') || ')'), 0::bigint);
+
+select test.check('timeline', 'a recruiter gets nothing from an unassigned candidate''s timeline',
+  test.count_as(:'SALAS',
+    'select count(*) from public.candidate_timeline(' || quote_literal(:'NAOMI') || ')'), 0::bigint);
+
 -- ---------------------------------------------------------------------------
 -- SECTION 9 — Assignment lifecycle drives access
 -- ---------------------------------------------------------------------------
@@ -365,7 +634,8 @@ select test.check('structure', 'anon holds no privileges on any public table',
 select test.check('structure', 'every business table carries business_unit_id',
   (select count(*) from (values
      ('candidates'),('candidate_assignments'),('marketing_periods'),
-     ('documents'),('candidate_internal_notes')) as t(tbl)
+     ('documents'),('candidate_internal_notes'),
+     ('applications'),('marketing_activities')) as t(tbl)
    where not exists (
      select 1 from information_schema.columns
       where table_schema='public' and table_name=t.tbl and column_name='business_unit_id'
@@ -374,7 +644,8 @@ select test.check('structure', 'every business table carries business_unit_id',
 select test.check('structure', 'every audited business table has the audit trigger',
   (select count(*) from (values
      ('candidates'),('candidate_assignments'),('marketing_periods'),
-     ('documents'),('users'),('user_roles'),('candidate_internal_notes')) as t(tbl)
+     ('documents'),('users'),('user_roles'),('candidate_internal_notes'),
+     ('applications'),('marketing_activities'),('application_status_history')) as t(tbl)
    where not exists (
      select 1 from pg_trigger tg
        join pg_class c on c.oid = tg.tgrelid
