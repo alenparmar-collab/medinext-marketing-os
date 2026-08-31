@@ -310,3 +310,125 @@ export function notificationHref(
       return null;
   }
 }
+
+/* ===========================================================================
+ * DAILY REPORTS
+ *
+ * A report is a reconciliation snapshot. Its figures are derived from the
+ * records; the recruiter contributes judgement, not numbers.
+ * =========================================================================== */
+export const DAILY_REPORT_STATUSES = ['draft', 'confirmed'] as const;
+export type DailyReportStatus = (typeof DAILY_REPORT_STATUSES)[number];
+
+export const DAILY_REPORT_STATUS_META: Record<
+  DailyReportStatus,
+  { label: string; tone: StatusTone }
+> = {
+  draft: { label: 'Draft', tone: 'caution' },
+  confirmed: { label: 'Confirmed', tone: 'positive' },
+};
+
+/**
+ * The five figures, in the order they are shown everywhere.
+ *
+ * Centralised so the daily-report table, the detail page and the team view
+ * cannot drift apart on labels or ordering.
+ */
+export const DAILY_REPORT_METRICS = [
+  { key: 'applications', label: 'Applications' },
+  { key: 'recruiterResponses', label: 'Responses' },
+  { key: 'interviews', label: 'Interviews' },
+  { key: 'assessments', label: 'Assessments' },
+  { key: 'rejections', label: 'Rejections' },
+] as const;
+
+export type DailyReportMetricKey = (typeof DAILY_REPORT_METRICS)[number]['key'];
+
+/* ===========================================================================
+ * REVIEW QUEUE
+ *
+ * NEUTRAL LANGUAGE THROUGHOUT.
+ *
+ * A review item says a person should look at something. It never asserts that
+ * anyone did anything wrong, and none of these labels implies fault. The
+ * database enums carry the same vocabulary and a test asserts no accusatory
+ * word reaches a reason string.
+ * =========================================================================== */
+export const REVIEW_ITEM_TYPES = [
+  'incomplete_record',
+  'possible_duplicate',
+  'uncertain_activity',
+  'missing_information',
+  'ambiguous_source',
+  'failed_automation',
+  'conflicting_information',
+] as const;
+
+export type ReviewItemType = (typeof REVIEW_ITEM_TYPES)[number];
+
+export const REVIEW_ITEM_TYPE_META: Record<ReviewItemType, { label: string; tone: StatusTone }> = {
+  incomplete_record:       { label: 'Incomplete record',       tone: 'info' },
+  possible_duplicate:      { label: 'Possible duplicate',      tone: 'caution' },
+  uncertain_activity:      { label: 'Uncertain activity',      tone: 'caution' },
+  missing_information:     { label: 'Missing information',     tone: 'info' },
+  ambiguous_source:        { label: 'Ambiguous source',        tone: 'caution' },
+  failed_automation:       { label: 'Automation did not run',  tone: 'caution' },
+  conflicting_information: { label: 'Conflicting information', tone: 'caution' },
+};
+
+export const REVIEW_ITEM_STATUSES = ['open', 'in_review', 'resolved', 'dismissed'] as const;
+export type ReviewItemStatus = (typeof REVIEW_ITEM_STATUSES)[number];
+
+export const REVIEW_ITEM_STATUS_META: Record<
+  ReviewItemStatus,
+  { label: string; tone: StatusTone; isOpen: boolean }
+> = {
+  open:      { label: 'Open',        tone: 'info',     isOpen: true },
+  in_review: { label: 'In review',   tone: 'caution',  isOpen: true },
+  resolved:  { label: 'Resolved',    tone: 'positive', isOpen: false },
+  dismissed: { label: 'Dismissed',   tone: 'muted',    isOpen: false },
+};
+
+export const REVIEW_ITEM_PRIORITIES = ['low', 'normal', 'high'] as const;
+export type ReviewItemPriority = (typeof REVIEW_ITEM_PRIORITIES)[number];
+
+export const REVIEW_ITEM_PRIORITY_META: Record<
+  ReviewItemPriority,
+  { label: string; tone: StatusTone; order: number }
+> = {
+  high:   { label: 'High',   tone: 'caution', order: 1 },
+  normal: { label: 'Normal', tone: 'neutral', order: 2 },
+  low:    { label: 'Low',    tone: 'muted',   order: 3 },
+};
+
+export const REVIEW_RESOLUTIONS = [
+  'corrected',
+  'confirmed_correct',
+  'merged',
+  'no_action_needed',
+] as const;
+
+export type ReviewResolution = (typeof REVIEW_RESOLUTIONS)[number];
+
+export const REVIEW_RESOLUTION_META: Record<ReviewResolution, { label: string }> = {
+  corrected:         { label: 'Corrected the record' },
+  confirmed_correct: { label: 'Checked — the record is correct' },
+  merged:            { label: 'Merged with another record' },
+  no_action_needed:  { label: 'No action needed' },
+};
+
+/* ===========================================================================
+ * USER ACCOUNTS
+ * =========================================================================== */
+export const USER_STATUSES = ['invited', 'active', 'suspended', 'disabled'] as const;
+export type UserAccountStatus = (typeof USER_STATUSES)[number];
+
+export const USER_STATUS_META: Record<
+  UserAccountStatus,
+  { label: string; tone: StatusTone; canSignIn: boolean }
+> = {
+  active:    { label: 'Active',    tone: 'positive', canSignIn: true },
+  invited:   { label: 'Invited',   tone: 'info',     canSignIn: false },
+  suspended: { label: 'Suspended', tone: 'caution',  canSignIn: false },
+  disabled:  { label: 'Disabled',  tone: 'muted',    canSignIn: false },
+};

@@ -30,11 +30,11 @@ export const INTERNAL_NAV: NavItem[] = [
   { label: 'Applications', href: '/applications', icon: 'Send', status: 'ready' },
   { label: 'Interviews', href: '/interviews', icon: 'CalendarClock', status: 'ready' },
   { label: 'Assessments', href: '/assessments', icon: 'ClipboardCheck', status: 'ready' },
-  { label: 'Daily Reports', href: '/reports/daily', icon: 'FileText', status: 'planned', plannedIn: 'Build 5' },
-  { label: 'Review Queue', href: '/review', icon: 'ListChecks', status: 'planned', plannedIn: 'Build 5' },
+  { label: 'Daily Reports', href: '/reports/daily', icon: 'FileText', status: 'ready', permission: 'report.view_own' },
+  { label: 'Review Queue', href: '/review', icon: 'ListChecks', status: 'ready', permission: 'review.view' },
   { label: 'Notifications', href: '/notifications', icon: 'Bell', status: 'ready' },
-  { label: 'Reports', href: '/reports', icon: 'BarChart3', status: 'planned', plannedIn: 'Build 5' },
-  { label: 'Team', href: '/team', icon: 'UserCog', status: 'planned', plannedIn: 'Build 5', permission: 'user.manage' },
+  { label: 'Reports', href: '/reports', icon: 'BarChart3', status: 'ready', permission: 'report.view_all' },
+  { label: 'Team', href: '/team', icon: 'UserCog', status: 'ready', permission: 'user.view' },
   { label: 'Settings', href: '/settings', icon: 'Settings', status: 'ready' },
 ];
 

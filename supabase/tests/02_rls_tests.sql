@@ -1498,3 +1498,129 @@ select test.check('structure', 'no policy calls a helper unwrapped (per-row eval
     where schemaname = 'public'
       and (coalesce(qual,'') || coalesce(with_check,'')) ~ '[^(]util\.(can_access|has_permission|is_internal|in_business_unit|own_candidate)'
       and (coalesce(qual,'') || coalesce(with_check,'')) !~ 'SELECT'), 0::bigint);
+
+-- ---------------------------------------------------------------------------
+-- SECTION 32 — Atomic reassignment (0029)
+--
+-- The transfer must be all-or-nothing. A partial transfer leaves the candidate
+-- with nobody working their file, which is worse than the change not happening.
+--
+-- Written to be re-runnable: the mutation harness runs this suite twice, and a
+-- block that assumes a starting state aborts on the second pass and silently
+-- drops every assertion below it. So the starting state is established here,
+-- and the target is whichever recruiter is NOT currently holding the file.
+-- ---------------------------------------------------------------------------
+do $$
+declare
+  c_lucia     constant uuid := '00000000-0000-4000-a000-000000000003';
+  c_eu_unit   constant uuid := '00000000-0000-4000-9000-000000000001';
+  c_manager   constant uuid := '00000000-0000-4000-8000-000000000002';
+  c_salas     constant uuid := '00000000-0000-4000-8000-000000000003';
+  c_halvorsen constant uuid := '00000000-0000-4000-8000-000000000004';
+
+  v_holder        uuid;
+  v_target        uuid;
+  v_previous_id   uuid;
+  v_new_id        uuid;
+  v_before_active bigint;
+  v_after_active  bigint;
+  v_before_total  bigint;
+  v_after_total   bigint;
+  v_blocked       boolean := false;
+begin
+  -- Establish the precondition rather than assuming it: an earlier lifecycle
+  -- test may have ended this candidate's assignment.
+  select id, user_id into v_previous_id, v_holder
+    from public.candidate_assignments
+   where candidate_id = c_lucia and assignment_type = 'primary_recruiter'
+     and ends_on is null;
+
+  if v_previous_id is null then
+    insert into public.candidate_assignments
+      (business_unit_id, candidate_id, user_id, assignment_type, created_by)
+    values (c_eu_unit, c_lucia, c_halvorsen, 'primary_recruiter', c_manager)
+    returning id, user_id into v_previous_id, v_holder;
+  end if;
+
+  v_target := case when v_holder = c_salas then c_halvorsen else c_salas end;
+
+  select count(*) filter (where ends_on is null), count(*)
+    into v_before_active, v_before_total
+    from public.candidate_assignments
+   where candidate_id = c_lucia and assignment_type = 'primary_recruiter';
+
+  -- A recruiter holds no candidate.assign, so the transfer must fail outright.
+  perform set_config('request.jwt.claims',
+    json_build_object('sub', c_salas, 'role', 'authenticated')::text, true);
+  set local role authenticated;
+  begin
+    perform public.reassign_candidate(c_lucia, v_target);
+  exception when others then
+    v_blocked := true;
+  end;
+  reset role;
+
+  insert into test.results (section, name, passed, detail)
+  values ('assignments', 'A RECRUITER CANNOT TRANSFER A CANDIDATE TO ANOTHER RECRUITER',
+          v_blocked, case when v_blocked then 'ok' else 'the transfer was accepted' end);
+
+  select count(*) filter (where ends_on is null)
+    into v_after_active
+    from public.candidate_assignments
+   where candidate_id = c_lucia and assignment_type = 'primary_recruiter';
+
+  -- The refusal must leave nothing behind: no half-closed assignment.
+  insert into test.results (section, name, passed, detail)
+  values ('assignments', 'A REFUSED TRANSFER LEAVES THE EXISTING ASSIGNMENT INTACT',
+          v_after_active = v_before_active,
+          format('active before %s, after %s', v_before_active, v_after_active));
+
+  -- The manager holds candidate.assign, so the same call must succeed.
+  perform set_config('request.jwt.claims',
+    json_build_object('sub', c_manager, 'role', 'authenticated')::text, true);
+  set local role authenticated;
+  v_new_id := public.reassign_candidate(c_lucia, v_target);
+  reset role;
+
+  select count(*) filter (where ends_on is null), count(*)
+    into v_after_active, v_after_total
+    from public.candidate_assignments
+   where candidate_id = c_lucia and assignment_type = 'primary_recruiter';
+
+  insert into test.results (section, name, passed, detail)
+  values ('assignments', 'A TRANSFER LEAVES EXACTLY ONE ACTIVE PRIMARY RECRUITER',
+          v_after_active = 1, format('active after transfer: %s', v_after_active));
+
+  insert into test.results (section, name, passed, detail)
+  values ('assignments', 'A TRANSFER KEEPS THE PREVIOUS ASSIGNMENT AS HISTORY',
+          v_after_total = v_before_total + 1,
+          format('rows before %s, after %s', v_before_total, v_after_total));
+
+  insert into test.results (section, name, passed, detail)
+  values ('assignments', 'THE CLOSED ASSIGNMENT RECORDS WHO ENDED IT AND WHEN',
+          coalesce((select ends_on is not null and ended_by is not null
+                      from public.candidate_assignments where id = v_previous_id), false),
+          'the row the transfer closed');
+
+  insert into test.results (section, name, passed, detail)
+  values ('assignments', 'the new assignment names the person it was transferred to',
+          coalesce((select user_id = v_target
+                      from public.candidate_assignments where id = v_new_id), false), 'ok');
+
+  -- Transferring to the person who already holds it is a no-op the function
+  -- refuses rather than performs, so it cannot churn the history.
+  v_blocked := false;
+  perform set_config('request.jwt.claims',
+    json_build_object('sub', c_manager, 'role', 'authenticated')::text, true);
+  set local role authenticated;
+  begin
+    perform public.reassign_candidate(c_lucia, v_target);
+  exception when others then
+    v_blocked := true;
+  end;
+  reset role;
+
+  insert into test.results (section, name, passed, detail)
+  values ('assignments', 'transferring to the current holder is refused',
+          v_blocked, case when v_blocked then 'ok' else 'a duplicate assignment was created' end);
+end $$;

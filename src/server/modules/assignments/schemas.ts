@@ -17,3 +17,19 @@ export const AssignmentEndSchema = z.object({
 });
 
 export type AssignmentEndInput = z.infer<typeof AssignmentEndSchema>;
+
+/**
+ * Reassignment is a single intent, not "end one, create another".
+ *
+ * Expressing it as one input is what lets it be executed as one transaction
+ * (public.reassign_candidate, migration 0029). The alternative leaves a window
+ * in which the candidate has nobody working their file.
+ */
+export const AssignmentTransferSchema = z.object({
+  candidateId: uuid,
+  userId: uuid,
+  assignmentType: z.enum(ASSIGNMENT_TYPES).default('primary_recruiter'),
+  startsOn: isoDate.optional(),
+});
+
+export type AssignmentTransferInput = z.infer<typeof AssignmentTransferSchema>;

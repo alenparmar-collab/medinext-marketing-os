@@ -4,11 +4,13 @@ Marketing operations platform for candidate marketing. Replaces an Excel-based
 workflow with an auditable system, and gives each candidate a portal showing
 only their own information.
 
-**Current stage: Build 4 — interviews, assessments, notifications and
-documents.** Interviews and assessments are first-class records with scheduling
-history and outcomes, notifications reach candidates and their recruiters
-idempotently, and documents can actually be uploaded and downloaded through
-signed URLs. Daily reports and the review queue remain navigation only.
+**Current stage: Build 5 — the operations control centre.** Interviews and
+assessments now have full scheduling and outcome screens; daily reports exist
+and their figures are **counted from the records rather than typed in**; a
+review queue surfaces records that need a human decision, in neutral language
+that never accuses anybody; team administration and candidate assignment
+management are in place, with role escalation closed off in the database rather
+than in the interface.
 
 ---
 
@@ -58,7 +60,14 @@ signed URLs. Daily reports and the review queue remain navigation only.
 | Document upload and signed-URL download, including candidate upload | Done |
 | Recruiter "needs your attention" queue | Done |
 | Candidate portal: interviews, assessments, notifications, documents | Done |
-| Daily reports, review queue | Navigation only |
+| Interview scheduling, rescheduling and outcome screens | Done |
+| Assessment creation, editing, status and outcome screens | Done |
+| Daily reports: derived figures, judgement fields, confirmation snapshot | Done |
+| Historical report filters by recruiter and date range | Done |
+| Review queue: deterministic checks, assignment, resolution with a note | Done |
+| Team administration: accounts, status, roles, escalation guards | Done |
+| Candidate assignment management with atomic transfer and full history | Done |
+| Recruiter workspace ("your day so far") and manager unit workspace | Done |
 | Email ingestion, AI, payments, sales, WhatsApp, mobile | Out of scope |
 
 ---
@@ -379,7 +388,7 @@ policies; it exercises them.
 npm run db:test
 ```
 
-187 assertions covering: anonymous access, role resolution, internal scope,
+253 assertions covering: anonymous access, role resolution, internal scope,
 cross-tenant isolation, candidate isolation in both directions on candidates,
 applications, activities, interviews, assessments, notifications, documents and
 the timeline, internal-note isolation, storage-object authorization, write
@@ -387,7 +396,15 @@ authorization, audit capture and immutability, the automation that derives
 history and activities, notification idempotency, cross-candidate attachment
 attacks, derived counts, assignment and account lifecycle, and structural
 guarantees generated from the catalogue (so a table added in a later build
-fails the suite until it is classified).
+fails the suite until it is classified), daily-report isolation between
+recruiters and between units, the confirmed snapshot equalling the derived
+figures, the review queue being invisible to candidates and undeletable, the
+role-escalation guards, and atomic candidate reassignment.
+
+Where an assertion once hardcoded a count from the seed, it now compares the
+RLS-filtered result against a superuser query implementing the intended rule.
+That is both a stronger assertion and one that does not go stale as the seed
+grows.
 
 **Storage policies are executed, not assumed.** The local shim provides
 `storage.buckets`, `storage.objects` and `storage.foldername`, so the real
@@ -400,14 +417,39 @@ cannot download candidate B's file" is an assertion, not a claim.
 bash scripts/db-mutation-test.sh
 ```
 
-Nine probes, each deliberately breaking one guarantee and asserting that a
+Sixteen probes, each deliberately breaking one guarantee and asserting that a
 named assertion catches it: candidate isolation on candidates, applications,
 interviews, assessments, notifications and stored files; internal notes staying
-out of the portal; notification idempotency; and cross-candidate attachment.
+out of the portal; notification idempotency; cross-candidate attachment;
+daily-report privacy between recruiters; report figures being derived rather
+than typed; the review queue staying internal; review history being
+undeletable; a manager being unable to create an administrator; a user being
+unable to change their own account status; and a transfer moving a candidate
+rather than adding a second owner.
 
-A green suite that cannot go red is worthless. Two of these probes failed on
-first run and exposed weak tests rather than weak policies — see the technical
-decisions below. Run this after any policy change.
+A green suite that cannot go red is worthless. Several of these probes have
+failed on first run, and every time they exposed a weak *test* rather than a
+weak policy — most recently a section that was not re-runnable, so the second
+pass aborted and silently dropped its assertions. Run this after any policy
+change.
+
+**One authorization condition, broken on purpose.** Build 5 asks for this
+explicitly. Rewriting `daily_reports_select_own` to read
+
+```sql
+using ((select util.is_internal()) and recruiter_id is not null)
+```
+
+turns a recruiter's own-report policy into "every report in the unit". Three
+assertions went red immediately:
+
+```
+ reports | recruiter Salas sees only their own reports           | expected 3, got 6
+ reports | RECRUITER CANNOT READ THE REPORT OF ANOTHER RECRUITER | expected 0, got 1
+ reports | cross-unit: EU manager cannot see the APAC report     | expected 0, got 1
+```
+
+Restoring `recruiter_id = (select auth.uid())` returned the suite to 253/253.
 
 ### 2. Unit tests
 
@@ -415,10 +457,12 @@ decisions below. Run this after any policy change.
 npm test
 ```
 
-100 assertions over validation schemas and the config/SQL sync — including that
-the TypeScript permission catalogue matches the SQL seed, that the enums match,
-that no sales role exists in either place, and that nothing anywhere implements
-location-mismatch logic.
+128 assertions over validation schemas, the config/SQL sync and the Build 5
+guarantees — including that the TypeScript permission catalogue matches the SQL
+seed, that the enums match, that no sales role exists in either place, that
+nothing anywhere implements location-mismatch logic, that no schema or form
+control accepts a report figure, that no review label or generated reason uses
+accusatory language, and that the role-escalation guards exist in the SQL.
 
 ### 3. HTTP smoke test
 
@@ -427,8 +471,15 @@ npm run build && bash scripts/smoke-test.sh
 ```
 
 Verifies at the request layer that every protected route refuses an
-unauthenticated caller, that sign-out cannot be triggered by a GET, and that the
-security headers are on the wire.
+unauthenticated caller — including the Build 5 routes — that sign-out cannot be
+triggered by a GET, and that the security headers are on the wire.
+
+The script now stops its server **by port** rather than by command line.
+`next start` execs a process whose title is `next-server (vX.Y.Z)`, so the old
+`pkill -f` pattern never matched it: a stale server survived, held the port, and
+the next run silently tested the previous build. The script also refuses to run
+if it sees `EADDRINUSE`, because a green smoke test against the wrong build is
+worse than a red one.
 
 ### What has been verified, and what has not
 
@@ -611,6 +662,10 @@ These are enforced, not merely documented:
 
 ## Known limitations
 
+The list is renumbered here: it had drifted out of sequence as builds appended
+to it, and item 11 ("interview and assessment creation has no UI form") is no
+longer true — Build 5 delivers those forms.
+
 1. **No live Supabase verification.** Interactive sign-in, sign-out and Storage
    round trips have not been executed against a real project. The RLS policies
    are verified against real PostgreSQL; the Supabase-hosted round trip is not.
@@ -630,28 +685,67 @@ These are enforced, not merely documented:
 7. **Marketing period creation has no UI.** The command, schema and policies
    exist and are tested; the form is not built. Periods are visible on the
    candidate's Marketing tab and in the seed.
-11. **Interview and assessment creation has no UI form yet.** The schemas,
-    commands, actions, permissions and policies are complete and tested, and the
-    records are read everywhere they matter; the create and edit forms are not
-    built. Seeded records exercise every read path.
-12. **Notifications are in-app only.** `notification_deliveries` from the
-    original architecture is not built; an email channel would slot in beneath
-    the same producer.
-8. **No pgTAP.** The RLS suite is plain SQL with a small assertion harness,
+8. **Notifications are in-app only.** `notification_deliveries` from the
+   original architecture is not built; an email channel would slot in beneath
+   the same producer.
+9. **No pgTAP.** The RLS suite is plain SQL with a small assertion harness,
    which needs no extension and runs anywhere PostgreSQL does.
-9. **Audit partitions are not auto-created.** `util.ensure_audit_partition()`
-   exists and the `DEFAULT` partition catches everything meanwhile; a scheduled
-   job should call it once monthly.
-10. **Statuses are provisional.** The seven marketing statuses come from the
+10. **Audit partitions are not auto-created.** `util.ensure_audit_partition()`
+    exists and the `DEFAULT` partition catches everything meanwhile; a scheduled
+    job should call it once monthly.
+11. **Statuses are provisional.** The seven marketing statuses come from the
     Build 2 brief. Other status vocabularies await the workbook profiling
     exercise (open decision D-05).
+12. **The review checks run on demand, not on a schedule.** `run_review_checks`
+    is idempotent and safe to call repeatedly, and the Review Queue has a button
+    for it. Wiring it to `pg_cron` is a deployment decision, not a code one.
+13. **There is no user invitation flow.** Team administration can activate,
+    suspend and disable existing accounts and change their roles; creating a new
+    internal account still means creating the auth user in Supabase. The
+    invitation flow belongs with the portal-invitation work.
+14. **A confirmed report cannot be reopened.** By design — confirmation freezes
+    the figures. If a correction is genuinely needed, the current answer is a
+    review item recording what changed, not an edit to the frozen snapshot.
+
+---
+
+## The one rule this build exists to enforce
+
+A daily report never accepts a number.
+
+If Dhrushil recorded 80 applications on 31 August, the report says 80 because
+`public.daily_report_metrics` counted 80 application rows whose `created_by` is
+Dhrushil and whose `application_date` is that day. Dhrushil is asked for notes,
+observations and exceptions — judgement the records cannot supply — and for
+nothing else.
+
+That is enforced in four independent places, so removing any one of them does
+not open the door:
+
+| Layer | What stops a typed figure |
+|---|---|
+| Schema | `DailyReportUpsertSchema` has no field for any count; an extra key is stripped by Zod before the command sees it. |
+| Command | `upsertOwnDailyReport` writes `notes`, `observations` and `exceptions`. There is no code path that sets a snapshot column. |
+| Database | The snapshot columns are written only by `confirm_daily_report`, which reads them from the metrics function in the same transaction. |
+| Tests | `tests/build5.test.ts` asserts the schema shape, that only migration 0026 writes a snapshot column, and that no form control anywhere is named after a metric. |
+
+The confirmed snapshot and the live count are both shown when they disagree.
+Neither is edited to match the other: the snapshot is what was reported on the
+day, the live count is what the records say now, and the difference is
+information rather than an error.
 
 ---
 
 ## Next build
 
-Build 5, per the plan in
-[`docs/architecture/14-implementation-plan.md`](./docs/architecture/14-implementation-plan.md):
-daily reports derived from the records rather than typed in, the review queue
-seeded by system consistency checks, and user and role administration — the last
-of which the navigation still marks as planned.
+Build 6 has not been specified. The natural candidates, in the order the
+architecture anticipates them:
+
+- **Excel migration** (`docs/architecture/13-excel-migration.md`) — the `ingest`
+  and `staging` schemas, and the importer that lands historical rows as
+  `excel_import` source records awaiting verification.
+- **Email intelligence** (`docs/architecture/10-email-intelligence.md`) — the
+  pipeline the trigger-driven derivation and the review queue were designed to
+  receive: source data, interpretation, and verified records kept separate.
+- **Portal invitations and rate limiting** — the remaining gap in account
+  lifecycle.

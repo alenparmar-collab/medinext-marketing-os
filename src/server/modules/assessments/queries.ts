@@ -1,5 +1,6 @@
 import 'server-only';
 import { createServerSupabase } from '@/lib/supabase/server';
+import { AppError } from '@/server/auth/errors';
 import type { AssessmentStatus, SourceKind } from '@/config/statuses';
 import { OPEN_ASSESSMENT_STATUSES, ASSESSMENT_STATUS_META } from '@/config/statuses';
 
@@ -97,4 +98,56 @@ export async function listAssessments(params: {
       isOverdue: isOpen && r.deadline !== null && Date.parse(r.deadline) < now,
     };
   });
+}
+
+export interface AssessmentDetail extends AssessmentListItem {
+  notes: string | null;
+  sourceReference: string | null;
+  createdByName: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// A separate literal, not LIST_COLUMNS + extras: concatenation widens the
+// select string to `string` and the inferred row type collapses with it.
+const DETAIL_COLUMNS =
+  'id, candidate_id, application_id, assessment_type, assessment_url, received_at, deadline, completed_at, status, outcome, source_type, source_reference, is_verified, notes, created_by, created_at, updated_at';
+
+export async function getAssessment(assessmentId: string): Promise<AssessmentDetail> {
+  const supabase = await createServerSupabase();
+
+  const { data, error } = await supabase
+    .from('assessments')
+    .select(DETAIL_COLUMNS)
+    .eq('id', assessmentId)
+    .maybeSingle();
+
+  if (error) throw error;
+  if (!data) throw new AppError('NOT_FOUND', 'Assessment not found.');
+
+  // Reuse the list decoration so one place decides what "open" and "overdue"
+  // mean. Two definitions of overdue is two answers to the same question.
+  const [base] = await listAssessments({ applicationId: data.application_id, limit: 100 }).then(
+    (items) => items.filter((i) => i.id === assessmentId),
+  );
+  if (!base) throw new AppError('NOT_FOUND', 'Assessment not found.');
+
+  let createdByName: string | null = null;
+  if (data.created_by) {
+    const { data: user } = await supabase
+      .from('users')
+      .select('full_name')
+      .eq('id', data.created_by)
+      .maybeSingle();
+    createdByName = user?.full_name ?? null;
+  }
+
+  return {
+    ...base,
+    notes: data.notes,
+    sourceReference: data.source_reference,
+    createdByName,
+    createdAt: data.created_at,
+    updatedAt: data.updated_at,
+  };
 }

@@ -2,7 +2,11 @@ import 'server-only';
 import { createServerSupabase } from '@/lib/supabase/server';
 import { AppError } from '@/server/auth/errors';
 import type { ActorContext } from '@/server/auth/actor';
-import type { AssignmentCreateInput, AssignmentEndInput } from './schemas';
+import type {
+  AssignmentCreateInput,
+  AssignmentEndInput,
+  AssignmentTransferInput,
+} from './schemas';
 
 export async function createAssignment(
   input: AssignmentCreateInput,
@@ -62,4 +66,31 @@ export async function endAssignment(
   if (error) throw error;
   if (!data) throw new AppError('NOT_FOUND', 'Assignment not found, already ended, or not permitted.');
   return { id: data.id };
+}
+
+/**
+ * Moves a candidate from one holder of an assignment to another, atomically.
+ *
+ * Delegates to the RPC rather than issuing two writes: the partial unique index
+ * forces the old assignment to close before the new one opens, and a failure
+ * between the two would leave the candidate unassigned. The function is
+ * SECURITY INVOKER, so this grants no authority the caller did not already
+ * have — a user without candidate.assign still writes nothing.
+ */
+export async function transferAssignment(
+  input: AssignmentTransferInput,
+  _actor: ActorContext,
+): Promise<{ id: string }> {
+  const supabase = await createServerSupabase();
+
+  const { data, error } = await supabase.rpc('reassign_candidate', {
+    p_candidate_id: input.candidateId,
+    p_user_id: input.userId,
+    p_assignment_type: input.assignmentType,
+    p_starts_on: input.startsOn ?? null,
+  });
+
+  if (error) throw error;
+  if (!data) throw new AppError('INTERNAL', 'The assignment was not transferred.');
+  return { id: data };
 }

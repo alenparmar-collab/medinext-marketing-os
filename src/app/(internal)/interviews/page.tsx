@@ -1,18 +1,19 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
-import { requireInternal } from '@/server/auth/actor';
+import { requireInternal, can } from '@/server/auth/actor';
 import { listInterviews } from '@/server/modules/interviews/queries';
 import { PageHeader } from '@/components/patterns/page-header';
 import { InterviewStatusBadge, SourceBadge } from '@/components/patterns/status-badge';
 import { EmptyState } from '@/components/patterns/states';
 import { Table, TableWrap, Td, Th, Tr } from '@/components/ui/table';
 import { Card, CardBody, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
 import { formatScheduledTime, formatRelative } from '@/lib/utils/format';
 
 export const metadata: Metadata = { title: 'Interviews' };
 
 export default async function InterviewsPage() {
-  await requireInternal();
+  const actor = await requireInternal();
 
   const all = await listInterviews({ limit: 200 });
 
@@ -30,6 +31,13 @@ export default async function InterviewsPage() {
       <PageHeader
         title="Interviews"
         description="Every interview across the candidates you can access. Upcoming first."
+        actions={
+          can(actor, 'interview.manage') ? (
+            <Button asChild variant="primary" size="sm">
+              <Link href="/interviews/new">Schedule interview</Link>
+            </Button>
+          ) : null
+        }
       />
 
       <Card>
@@ -56,7 +64,12 @@ export default async function InterviewsPage() {
                 >
                   <div className="min-w-0">
                     <p className="text-[14px] font-medium text-[var(--text-primary)]">
-                      {i.positionTitle} · {i.companyName}
+                      <Link
+                        href={`/interviews/${i.id}`}
+                        className="hover:text-[var(--color-accent-600)] hover:underline"
+                      >
+                        {i.positionTitle} · {i.companyName}
+                      </Link>
                     </p>
                     <p className="text-[13px] text-[var(--text-secondary)]">
                       <Link
@@ -99,6 +112,7 @@ export default async function InterviewsPage() {
                   <Th scope="col" className="text-right">Round</Th>
                   <Th scope="col">When</Th>
                   <Th scope="col">Status</Th>
+                  <Th scope="col"><span className="sr-only">Open</span></Th>
                 </tr>
               </thead>
               <tbody>
@@ -124,6 +138,14 @@ export default async function InterviewsPage() {
                         <InterviewStatusBadge status={i.status} />
                         <SourceBadge source={i.sourceType} isVerified={i.isVerified} />
                       </span>
+                    </Td>
+                    <Td className="text-right">
+                      <Link
+                        href={`/interviews/${i.id}`}
+                        className="text-[13px] text-[var(--color-accent-600)] hover:underline"
+                      >
+                        Open
+                      </Link>
                     </Td>
                   </Tr>
                 ))}

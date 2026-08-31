@@ -28,6 +28,11 @@ import type {
   InterviewStatus,
   AssessmentStatus,
   NotificationType,
+  DailyReportStatus,
+  ReviewItemType,
+  ReviewItemStatus,
+  ReviewItemPriority,
+  ReviewResolution,
 } from '@/config/statuses';
 import type { RoleCode } from '@/config/permissions';
 
@@ -322,6 +327,61 @@ export type NotificationRow = {
   created_at: string;
 };
 
+export type DailyReportRow = {
+  id: string;
+  business_unit_id: string;
+  recruiter_id: string;
+  report_date: string;
+  status: DailyReportStatus;
+  notes: string | null;
+  observations: string | null;
+  exceptions: string | null;
+  snapshot_applications: number | null;
+  snapshot_recruiter_responses: number | null;
+  snapshot_interviews: number | null;
+  snapshot_assessments: number | null;
+  snapshot_rejections: number | null;
+  snapshot_taken_at: string | null;
+  confirmed_by: string | null;
+  confirmed_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ReviewItemRow = {
+  id: string;
+  business_unit_id: string;
+  item_type: ReviewItemType;
+  priority: ReviewItemPriority;
+  status: ReviewItemStatus;
+  candidate_id: string | null;
+  application_id: string | null;
+  activity_id: string | null;
+  interview_id: string | null;
+  assessment_id: string | null;
+  reason: string;
+  detail: string | null;
+  source_type: SourceKind;
+  source_reference: string | null;
+  dedupe_key: string;
+  assigned_to: string | null;
+  resolution: ReviewResolution | null;
+  resolution_notes: string | null;
+  resolved_by: string | null;
+  resolved_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+/** Row shape returned by public.daily_report_metrics(uuid, date). */
+export type DailyReportMetricsRow = {
+  applications: number;
+  recruiter_responses: number;
+  interviews: number;
+  assessments: number;
+  rejections: number;
+};
+
 export type RolePermissionRow = {
   role_code: RoleCode;
   permission_code: string;
@@ -354,9 +414,37 @@ export type Database = {
       interview_schedule_history: TableDef<InterviewScheduleHistoryRow>;
       assessments: TableDef<AssessmentRow>;
       notifications: TableDef<NotificationRow>;
+      daily_reports: TableDef<DailyReportRow>;
+      review_items: TableDef<ReviewItemRow>;
     };
     Views: { [_ in never]: never };
     Functions: {
+      daily_report_metrics: {
+        Args: { p_recruiter_id: string; p_report_date: string };
+        Returns: DailyReportMetricsRow[];
+      };
+      confirm_daily_report: {
+        Args: {
+          p_report_id: string;
+          p_notes?: string | null;
+          p_observations?: string | null;
+          p_exceptions?: string | null;
+        };
+        Returns: string;
+      };
+      request_review_checks: {
+        Args: Record<string, never>;
+        Returns: number;
+      };
+      reassign_candidate: {
+        Args: {
+          p_candidate_id: string;
+          p_user_id: string;
+          p_assignment_type?: AssignmentType;
+          p_starts_on?: string | null;
+        };
+        Returns: string;
+      };
       reschedule_interview: {
         Args: {
           p_interview_id: string;
@@ -395,6 +483,11 @@ export type Database = {
       interview_status: InterviewStatus;
       assessment_status: AssessmentStatus;
       notification_type: NotificationType;
+      daily_report_status: DailyReportStatus;
+      review_item_type: ReviewItemType;
+      review_item_status: ReviewItemStatus;
+      review_item_priority: ReviewItemPriority;
+      review_resolution: ReviewResolution;
       assignment_type: AssignmentType;
       document_visibility: DocumentVisibility;
       user_status: UserStatus;

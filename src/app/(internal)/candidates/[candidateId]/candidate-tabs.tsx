@@ -15,6 +15,7 @@ const TABS = [
   { label: 'Marketing', segment: 'marketing' },
   { label: 'Timeline', segment: 'timeline' },
   { label: 'Documents', segment: 'documents' },
+  { label: 'Assignments', segment: 'assignments' },
 ];
 
 export function CandidateTabs({ candidateId }: { candidateId: string }) {

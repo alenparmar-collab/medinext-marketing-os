@@ -31,6 +31,12 @@ export const PERMISSIONS = [
   'assessment.manage',
   'assessment.delete',
   'document.download',
+  'report.submit_own',
+  'report.view_own',
+  'report.view_all',
+  'review.view',
+  'review.manage',
+  'user.view',
   'marketing_period.view',
   'marketing_period.manage',
   'document.view_internal',
@@ -52,6 +58,17 @@ export const ROLES = ['admin', 'manager', 'recruiter', 'candidate'] as const;
 export type RoleCode = (typeof ROLES)[number];
 
 export const INTERNAL_ROLES: readonly RoleCode[] = ['admin', 'manager', 'recruiter'];
+
+/**
+ * The roles an administrator may grant from the team screen.
+ *
+ * `candidate` is deliberately absent. A portal account exists because a
+ * candidate record invited it, never because somebody picked the role from a
+ * dropdown, and the exclusivity trigger in migration 0003 would reject it in
+ * any case.
+ */
+export const ASSIGNABLE_ROLES = ['admin', 'manager', 'recruiter'] as const;
+export type AssignableRole = (typeof ASSIGNABLE_ROLES)[number];
 
 export function isInternalRole(role: RoleCode): boolean {
   return INTERNAL_ROLES.includes(role);

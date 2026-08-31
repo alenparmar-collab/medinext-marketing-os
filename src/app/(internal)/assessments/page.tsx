@@ -1,18 +1,19 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
-import { requireInternal } from '@/server/auth/actor';
+import { requireInternal, can } from '@/server/auth/actor';
 import { listAssessments } from '@/server/modules/assessments/queries';
 import { PageHeader } from '@/components/patterns/page-header';
 import { AssessmentStatusBadge, SourceBadge } from '@/components/patterns/status-badge';
 import { EmptyState } from '@/components/patterns/states';
 import { Table, TableWrap, Td, Th, Tr } from '@/components/ui/table';
 import { Card, CardBody, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
 import { formatDateTime, formatRelative } from '@/lib/utils/format';
 
 export const metadata: Metadata = { title: 'Assessments' };
 
 export default async function AssessmentsPage() {
-  await requireInternal();
+  const actor = await requireInternal();
 
   const all = await listAssessments({ limit: 200 });
   const open = all
@@ -30,6 +31,13 @@ export default async function AssessmentsPage() {
       <PageHeader
         title="Assessments"
         description="Assessments issued to the candidates you can access. Outstanding work first."
+        actions={
+          can(actor, 'assessment.manage') ? (
+            <Button asChild variant="primary" size="sm">
+              <Link href="/assessments/new">Record assessment</Link>
+            </Button>
+          ) : null
+        }
       />
 
       <Card>
@@ -56,7 +64,12 @@ export default async function AssessmentsPage() {
                   >
                     <div className="min-w-0">
                       <p className="text-[14px] font-medium text-[var(--text-primary)]">
-                        {a.assessmentType} · {a.companyName}
+                        <Link
+                          href={`/assessments/${a.id}`}
+                          className="hover:text-[var(--color-accent-600)] hover:underline"
+                        >
+                          {a.assessmentType} · {a.companyName}
+                        </Link>
                       </p>
                       <p className="text-[13px] text-[var(--text-secondary)]">
                         <Link
@@ -120,7 +133,14 @@ export default async function AssessmentsPage() {
                         {a.candidateName}
                       </Link>
                     </Td>
-                    <Td className="text-[var(--text-secondary)]">{a.assessmentType}</Td>
+                    <Td>
+                      <Link
+                        href={`/assessments/${a.id}`}
+                        className="text-[var(--text-secondary)] hover:text-[var(--color-accent-600)] hover:underline"
+                      >
+                        {a.assessmentType}
+                      </Link>
+                    </Td>
                     <Td className="text-[var(--text-secondary)]">{a.companyName}</Td>
                     <Td className="tabular text-[13px] text-[var(--text-secondary)]">
                       {a.completedAt ? formatDateTime(a.completedAt) : '—'}

@@ -4,6 +4,11 @@ import type { MarketingStatus } from '@/config/statuses';
 import { listInterviews } from '@/server/modules/interviews/queries';
 import { listAssessments } from '@/server/modules/assessments/queries';
 import { countUnread } from '@/server/modules/notifications';
+import { findOwnReport, getReportMetrics } from '@/server/modules/reports/queries';
+import type { ReportMetrics } from '@/server/modules/reports/queries';
+import { listReviewItems } from '@/server/modules/review';
+import type { ReviewItem } from '@/server/modules/review';
+import type { DailyReportStatus } from '@/config/statuses';
 import type { InterviewListItem } from '@/server/modules/interviews/types';
 import type { AssessmentListItem } from '@/server/modules/assessments/queries';
 
@@ -38,13 +43,29 @@ export interface AttentionQueue {
   openAssessments: AssessmentListItem[];
   overdueAssessments: AssessmentListItem[];
   unreadNotifications: number;
+  /** Today's own report: what it says so far, and whether it has been written up. */
+  today: {
+    date: string;
+    metrics: ReportMetrics;
+    reportId: string | null;
+    status: DailyReportStatus | null;
+  };
+  /** Open review items, RLS-filtered — a recruiter sees their unit's queue. */
+  openReviewItems: ReviewItem[];
 }
 
-export async function getAttentionQueue(): Promise<AttentionQueue> {
-  const [interviews, assessments, unread] = await Promise.all([
+export async function getAttentionQueue(userId: string): Promise<AttentionQueue> {
+  // The date comes from the server clock, not the browser's: a report dated by
+  // whatever the client thinks today is would be a different day's record.
+  const today = new Date().toISOString().slice(0, 10);
+
+  const [interviews, assessments, unread, ownReport, metrics, reviewItems] = await Promise.all([
     listInterviews({ upcomingOnly: true, limit: 8 }),
     listAssessments({ openOnly: true, limit: 20 }),
     countUnread(),
+    findOwnReport(userId, today),
+    getReportMetrics(userId, today),
+    listReviewItems({ status: 'open', limit: 5 }),
   ]);
 
   const now = Date.now();
@@ -56,6 +77,13 @@ export async function getAttentionQueue(): Promise<AttentionQueue> {
     openAssessments: open,
     overdueAssessments: overdue,
     unreadNotifications: unread,
+    today: {
+      date: today,
+      metrics,
+      reportId: ownReport?.id ?? null,
+      status: ownReport?.status ?? null,
+    },
+    openReviewItems: reviewItems,
   };
 }
 

@@ -140,6 +140,10 @@ probe "users being unable to change their own account status" \
   "drop trigger guard_user_self_update on public.users;" \
   "A USER CANNOT CHANGE THEIR OWN ACCOUNT STATUS"
 
+probe "a transfer moving a candidate rather than adding an owner" \
+  "@supabase/tests/mutations/assignment_transfer.sql" \
+  "A TRANSFER LEAVES EXACTLY ONE ACTIVE PRIMARY RECRUITER"
+
 probe "cross-candidate attachment being structurally impossible" \
   "alter table public.interviews
      drop constraint interviews_application_id_candidate_id_fkey;

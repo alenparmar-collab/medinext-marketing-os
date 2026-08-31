@@ -1,6 +1,6 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
-import { requireInternal } from '@/server/auth/actor';
+import { requireInternal, can } from '@/server/auth/actor';
 import { getOverviewMetrics, getAttentionQueue } from '@/server/modules/dashboard/queries';
 import { InterviewStatusBadge, AssessmentStatusBadge } from '@/components/patterns/status-badge';
 import { formatScheduledTime, formatRelative, formatDateTime } from '@/lib/utils/format';
@@ -9,6 +9,13 @@ import { Card, CardBody, CardHeader, CardTitle } from '@/components/ui/card';
 import { MarketingStatusBadge } from '@/components/patterns/status-badge';
 import { EmptyState } from '@/components/patterns/states';
 import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import {
+  DAILY_REPORT_METRICS,
+  DAILY_REPORT_STATUS_META,
+  REVIEW_ITEM_PRIORITY_META,
+  REVIEW_ITEM_TYPE_META,
+} from '@/config/statuses';
 
 export const metadata: Metadata = { title: 'Overview' };
 
@@ -20,7 +27,7 @@ export default async function OverviewPage() {
   const actor = await requireInternal();
   const [metrics, attention] = await Promise.all([
     getOverviewMetrics(actor.userId),
-    getAttentionQueue(),
+    getAttentionQueue(actor.userId),
   ]);
 
   const nothingPending =
@@ -66,6 +73,99 @@ export default async function OverviewPage() {
           </Card>
         ))}
       </div>
+
+      {/*
+        Today, for this person. The five figures are counted from the records
+        THEY created today — the same derivation the daily report uses, so the
+        number here and the number on the report can never disagree.
+      */}
+      {can(actor, 'report.submit_own') ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>Your day so far</CardTitle>
+            {attention.today.status ? (
+              <Badge tone={DAILY_REPORT_STATUS_META[attention.today.status].tone}>
+                {DAILY_REPORT_STATUS_META[attention.today.status].label}
+              </Badge>
+            ) : (
+              <Badge tone="muted">No report yet</Badge>
+            )}
+          </CardHeader>
+          <CardBody>
+            <dl className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+              {DAILY_REPORT_METRICS.map(({ key, label }) => (
+                <div
+                  key={key}
+                  className="rounded-[var(--radius-sm)] border border-[var(--border-subtle)] px-3 py-2.5"
+                >
+                  <dt className="text-[11px] font-medium uppercase tracking-[0.08em] text-[var(--text-muted)]">
+                    {label}
+                  </dt>
+                  <dd className="tabular mt-1 text-[22px] font-semibold leading-none text-[var(--text-primary)]">
+                    {attention.today.metrics[key]}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+            <div className="mt-3 flex flex-wrap items-center gap-3">
+              <Button asChild variant="secondary" size="sm">
+                <Link href="/reports/daily/today">
+                  {attention.today.status === 'confirmed'
+                    ? "View today's report"
+                    : attention.today.status === 'draft'
+                      ? 'Finish your report'
+                      : 'Write up your day'}
+                </Link>
+              </Button>
+              <p className="text-[12px] text-[var(--text-muted)]">
+                Counted from your records. You are never asked to type these in.
+              </p>
+            </div>
+          </CardBody>
+        </Card>
+      ) : null}
+
+      {attention.openReviewItems.length > 0 ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>Waiting for a look</CardTitle>
+            <Link
+              href="/review"
+              className="text-[13px] text-[var(--color-accent-600)] hover:underline"
+            >
+              Open the queue
+            </Link>
+          </CardHeader>
+          <CardBody className="p-0">
+            <ul className="flex flex-col">
+              {attention.openReviewItems.map((item) => (
+                <li
+                  key={item.id}
+                  className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--border-subtle)] px-5 py-3 last:border-b-0"
+                >
+                  <div className="min-w-0">
+                    <p className="text-[13.5px] text-[var(--text-primary)]">
+                      <Link
+                        href={`/review/${item.id}`}
+                        className="hover:text-[var(--color-accent-600)] hover:underline"
+                      >
+                        {item.reason}
+                      </Link>
+                    </p>
+                    <p className="text-[12px] text-[var(--text-muted)]">
+                      {REVIEW_ITEM_TYPE_META[item.itemType].label}
+                      {item.candidateName ? ` · ${item.candidateName}` : ''}
+                    </p>
+                  </div>
+                  <Badge tone={REVIEW_ITEM_PRIORITY_META[item.priority].tone}>
+                    {REVIEW_ITEM_PRIORITY_META[item.priority].label}
+                  </Badge>
+                </li>
+              ))}
+            </ul>
+          </CardBody>
+        </Card>
+      ) : null}
 
       {/*
         "What needs my attention?" comes before the summary counts, because it

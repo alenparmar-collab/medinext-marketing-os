@@ -11,9 +11,15 @@
 # placeholder values the auth lookup fails, the actor resolves to null, and the
 # redirect behaviour under test is exactly what an anonymous visitor gets.
 #
-# Note the [n] in the pkill patterns. `pkill -f` matches full command lines,
-# including this script's own, so an unbracketed pattern makes the script kill
-# itself.
+# Stopping the server is done BY PORT, not by command line. `next start` execs
+# a process whose title is "next-server (vX.Y.Z)" — it does not contain the
+# argv the script launched it with — so a pkill pattern never matches it and a
+# stale server survives to hold the port. The next run then fails to bind and
+# silently tests the OLD build, which is how a green smoke test can be a lie.
+#
+# The pkill remains as a fallback for systems without fuser. Note the [n]:
+# `pkill -f` matches full command lines including this script's own, so an
+# unbracketed pattern makes the script kill itself.
 # ---------------------------------------------------------------------------
 set -uo pipefail
 
@@ -23,7 +29,15 @@ FAILED=0
 
 pass() { printf '  PASS  %s\n' "$1"; }
 fail() { printf '  FAIL  %s (%s)\n' "$1" "$2"; FAILED=$((FAILED + 1)); }
-stop_server() { pkill -f "[n]ext start -p ${PORT}" >/dev/null 2>&1 || true; }
+stop_server() {
+  fuser -k "${PORT}/tcp" >/dev/null 2>&1 || true
+  pkill -f "[n]ext start -p ${PORT}" >/dev/null 2>&1 || true
+  # Give the socket a moment to be released before the next bind.
+  for _ in $(seq 1 10); do
+    fuser "${PORT}/tcp" >/dev/null 2>&1 || return 0
+    sleep 0.3
+  done
+}
 
 stop_server
 # Fully detached: a backgrounded job plus an EXIT trap can take the calling
@@ -34,6 +48,12 @@ for _ in $(seq 1 40); do
   curl -sf "${BASE}/api/health" >/dev/null 2>&1 && break
   sleep 1
 done
+
+if grep -q 'EADDRINUSE' /tmp/medinext-smoke.log 2>/dev/null; then
+  echo "  port ${PORT} was still held by an older server; refusing to test a stale build"
+  stop_server
+  exit 1
+fi
 
 if ! curl -sf "${BASE}/api/health" >/dev/null 2>&1; then
   echo "  server did not start; see /tmp/medinext-smoke.log"
@@ -50,7 +70,9 @@ echo "==> Public endpoints"
 
 echo "==> Protected routes refuse an unauthenticated caller"
 for path in / /overview /candidates /candidates/new /marketing /settings /team \
-            /applications /applications/new /interviews /assessments /notifications \
+            /applications /applications/new /interviews /interviews/new \
+            /assessments /assessments/new /notifications \
+            /reports /reports/daily /reports/daily/new /reports/daily/today /review \
             /portal /portal/profile /portal/marketing /portal/documents \
             /portal/applications /portal/activity /portal/interviews \
             /portal/assessments /portal/notifications; do
