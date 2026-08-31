@@ -103,6 +103,10 @@ export async function listAssessments(params: {
 export interface AssessmentDetail extends AssessmentListItem {
   notes: string | null;
   sourceReference: string | null;
+  /** OWNERSHIP at event time — see applications. */
+  responsibleRecruiterId: string | null;
+  responsibleRecruiterName: string | null;
+  /** PROVENANCE — null when no human created it. */
   createdByName: string | null;
   createdAt: string;
   updatedAt: string;
@@ -111,7 +115,7 @@ export interface AssessmentDetail extends AssessmentListItem {
 // A separate literal, not LIST_COLUMNS + extras: concatenation widens the
 // select string to `string` and the inferred row type collapses with it.
 const DETAIL_COLUMNS =
-  'id, candidate_id, application_id, assessment_type, assessment_url, received_at, deadline, completed_at, status, outcome, source_type, source_reference, is_verified, notes, created_by, created_at, updated_at';
+  'id, candidate_id, application_id, assessment_type, assessment_url, received_at, deadline, completed_at, status, outcome, source_type, source_reference, is_verified, notes, responsible_recruiter_id, created_by, created_at, updated_at';
 
 export async function getAssessment(assessmentId: string): Promise<AssessmentDetail> {
   const supabase = await createServerSupabase();
@@ -132,21 +136,29 @@ export async function getAssessment(assessmentId: string): Promise<AssessmentDet
   );
   if (!base) throw new AppError('NOT_FOUND', 'Assessment not found.');
 
-  let createdByName: string | null = null;
-  if (data.created_by) {
-    const { data: user } = await supabase
+  // One lookup for both names: ownership and provenance are shown together and
+  // are frequently different people.
+  const attributionIds = [data.created_by, data.responsible_recruiter_id].filter(
+    Boolean,
+  ) as string[];
+  const names = new Map<string, string>();
+  if (attributionIds.length > 0) {
+    const { data: people } = await supabase
       .from('users')
-      .select('full_name')
-      .eq('id', data.created_by)
-      .maybeSingle();
-    createdByName = user?.full_name ?? null;
+      .select('id, full_name')
+      .in('id', attributionIds);
+    for (const person of people ?? []) names.set(person.id, person.full_name);
   }
 
   return {
     ...base,
     notes: data.notes,
     sourceReference: data.source_reference,
-    createdByName,
+    responsibleRecruiterId: data.responsible_recruiter_id,
+    responsibleRecruiterName: data.responsible_recruiter_id
+      ? (names.get(data.responsible_recruiter_id) ?? null)
+      : null,
+    createdByName: data.created_by ? (names.get(data.created_by) ?? null) : null,
     createdAt: data.created_at,
     updatedAt: data.updated_at,
   };

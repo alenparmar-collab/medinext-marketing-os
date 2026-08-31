@@ -14,6 +14,7 @@ import {
 } from '@/components/patterns/status-badge';
 import { Button } from '@/components/ui/button';
 import { formatDate, formatDateTime } from '@/lib/utils/format';
+import { Attribution } from '@/components/patterns/attribution';
 import { StatusChanger } from './status-changer';
 
 export const metadata: Metadata = { title: 'Application' };
@@ -106,7 +107,6 @@ export default async function ApplicationDetailPage({
               {/* Descriptive only — never compared against candidate location. */}
               <Row label="Job location" value={application.jobLocation ?? '—'} />
               <Row label="Application date" value={formatDate(application.applicationDate)} />
-              <Row label="Recorded by" value={application.createdByName ?? 'Unknown'} />
               <Row label="Recorded at" value={formatDateTime(application.createdAt)} />
               {application.notes ? (
                 <Row
@@ -115,6 +115,21 @@ export default async function ApplicationDetailPage({
                 />
               ) : null}
             </dl>
+
+            {/*
+              Ownership and provenance, kept apart. "Recorded by" used to sit
+              in the list above as if it answered whose work this was; it never
+              did. The recruiter this counts for is the first line here.
+            */}
+            <div className="mt-4 border-t border-[var(--border-subtle)] pt-4">
+              <Attribution
+                className="grid grid-cols-1 gap-3 sm:grid-cols-3"
+                responsibleRecruiterName={application.responsibleRecruiterName}
+                createdByName={application.createdByName}
+                source={application.sourceType}
+                sourceReference={application.sourceReference}
+              />
+            </div>
           </CardBody>
         </Card>
 

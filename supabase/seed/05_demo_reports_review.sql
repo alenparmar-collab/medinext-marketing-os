@@ -107,6 +107,68 @@ insert into public.marketing_activities (
 on conflict (id) do nothing;
 
 -- ---------------------------------------------------------------------------
+-- Records where the CREATOR is not the OWNER.
+--
+-- Everything above was created by the recruiter who owns the candidate, so it
+-- cannot tell the two apart. These three can: each belongs to Salas's day
+-- because Salas is Priya's primary recruiter, and none of them was typed by
+-- him. Without these the report figures would be identical whether they were
+-- attributed by ownership or by keystrokes, and the test asserting the
+-- difference would be vacuous.
+--
+-- "SYSTEM" here is created_by = NULL — the existing representation for a write
+-- with no session actor, which the audit trigger already records as
+-- actor_kind = 'system'. No fake user row is invented for it.
+-- ---------------------------------------------------------------------------
+
+-- CASE C — a manager records an application on the recruiter's behalf.
+select set_config('app.actor_id', '00000000-0000-4000-8000-000000000002', false);
+
+insert into public.applications (
+  id, business_unit_id, candidate_id, marketing_period_id,
+  company_name, position_title, job_id, job_location,
+  application_date, status, source_type, verified_at, verified_by, created_by
+) values (
+  '00000000-0000-4000-8f00-000000000108', '00000000-0000-4000-9000-000000000001',
+  '00000000-0000-4000-a000-000000000001', '00000000-0000-4000-8c00-000000000001',
+  'Marlowe Clinical Partners', 'Clinical Data Manager', 'REF-0108', 'United Kingdom',
+  current_date - 3, 'submitted',
+  'manual', now(), '00000000-0000-4000-8000-000000000002',
+  '00000000-0000-4000-8000-000000000002'
+) on conflict (id) do nothing;
+
+-- CASE A — an automated pipeline records an application. No session actor.
+select set_config('app.actor_id', '', false);
+
+insert into public.applications (
+  id, business_unit_id, candidate_id, marketing_period_id,
+  company_name, position_title, job_id, job_location,
+  application_date, status, source_type, source_reference, created_by
+) values (
+  '00000000-0000-4000-8f00-000000000109', '00000000-0000-4000-9000-000000000001',
+  '00000000-0000-4000-a000-000000000001', '00000000-0000-4000-8c00-000000000001',
+  'Harrowgate Biosciences', 'Data Standards Analyst', 'REF-0109', 'United Kingdom',
+  current_date - 3, 'submitted',
+  'system', 'pipeline:demo:application:0109', null
+) on conflict (id) do nothing;
+
+-- CASE B — an interview arrives from an email, with no human actor at all.
+-- Left as `completed` so it does not also trip the past-due review check; this
+-- record is here to prove attribution, not to exercise the queue.
+insert into public.interviews (
+  id, business_unit_id, candidate_id, application_id,
+  interview_round, scheduled_at, time_zone, status,
+  source_type, source_reference, created_by
+) values (
+  '00000000-0000-4000-9200-000000000021', '00000000-0000-4000-9000-000000000001',
+  '00000000-0000-4000-a000-000000000001', '00000000-0000-4000-8f00-000000000101',
+  1, (current_date - 3)::timestamptz + interval '14 hours', 'Europe/London', 'completed',
+  'email_event', 'message-id:<demo-0021@example.invalid>', null
+) on conflict (id) do nothing;
+
+select set_config('app.actor_id', '00000000-0000-4000-8000-000000000003', false);
+
+-- ---------------------------------------------------------------------------
 -- Daily reports.
 --
 -- Only the user-entered fields are seeded. The figures are derived on read, and

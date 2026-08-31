@@ -17,7 +17,7 @@ const LIST_COLUMNS =
   'id, candidate_id, company_name, position_title, job_location, application_date, status, source_type, is_verified';
 
 const DETAIL_COLUMNS =
-  'id, candidate_id, business_unit_id, company_name, position_title, job_id, job_url, job_location, application_date, status, notes, source_type, source_reference, is_verified, created_by, created_at, updated_at';
+  'id, candidate_id, business_unit_id, company_name, position_title, job_id, job_url, job_location, application_date, status, notes, source_type, source_reference, is_verified, responsible_recruiter_id, created_by, created_at, updated_at';
 
 type CandidateLabel = { name: string; reference: string };
 
@@ -110,8 +110,14 @@ export async function getApplication(applicationId: string): Promise<Application
   ]);
 
   const history = historyResult.data ?? [];
+  // The responsible recruiter is resolved here alongside the actors, because
+  // the two are shown together and the page must be able to say which is which.
   const actorIds = [
-    ...new Set([...history.map((h) => h.changed_by), app.created_by].filter(Boolean)),
+    ...new Set(
+      [...history.map((h) => h.changed_by), app.created_by, app.responsible_recruiter_id].filter(
+        Boolean,
+      ),
+    ),
   ] as string[];
 
   const names = new Map<string, string>();
@@ -138,6 +144,10 @@ export async function getApplication(applicationId: string): Promise<Application
     notes: app.notes,
     sourceType: app.source_type as SourceKind,
     sourceReference: app.source_reference,
+    responsibleRecruiterId: app.responsible_recruiter_id,
+    responsibleRecruiterName: app.responsible_recruiter_id
+      ? (names.get(app.responsible_recruiter_id) ?? null)
+      : null,
     isVerified: app.is_verified,
     createdByName: app.created_by ? (names.get(app.created_by) ?? null) : null,
     createdAt: app.created_at,

@@ -4,13 +4,16 @@ Marketing operations platform for candidate marketing. Replaces an Excel-based
 workflow with an auditable system, and gives each candidate a portal showing
 only their own information.
 
-**Current stage: Build 5 — the operations control centre.** Interviews and
+**Current stage: Build 5.1 — ownership and attribution hardening.** Interviews and
 assessments now have full scheduling and outcome screens; daily reports exist
 and their figures are **counted from the records rather than typed in**; a
 review queue surfaces records that need a human decision, in neutral language
 that never accuses anybody; team administration and candidate assignment
 management are in place, with role escalation closed off in the database rather
-than in the interface.
+than in the interface. Build 5.1 then separated two things the reports had been
+conflating: **who is responsible for a candidate's marketing** and **who created
+the record**. They are not the same, and counting the second was making
+recruiters' own reports wrong.
 
 ---
 
@@ -67,6 +70,8 @@ than in the interface.
 | Review queue: deterministic checks, assignment, resolution with a note | Done |
 | Team administration: accounts, status, roles, escalation guards | Done |
 | Candidate assignment management with atomic transfer and full history | Done |
+| Responsible recruiter recorded on every marketing record, separately from its creator | Done |
+| Daily report figures attributed by responsibility, not by keystrokes | Done |
 | Recruiter workspace ("your day so far") and manager unit workspace | Done |
 | Email ingestion, AI, payments, sales, WhatsApp, mobile | Out of scope |
 
@@ -388,7 +393,7 @@ policies; it exercises them.
 npm run db:test
 ```
 
-253 assertions covering: anonymous access, role resolution, internal scope,
+292 assertions covering: anonymous access, role resolution, internal scope,
 cross-tenant isolation, candidate isolation in both directions on candidates,
 applications, activities, interviews, assessments, notifications, documents and
 the timeline, internal-note isolation, storage-object authorization, write
@@ -399,7 +404,11 @@ guarantees generated from the catalogue (so a table added in a later build
 fails the suite until it is classified), daily-report isolation between
 recruiters and between units, the confirmed snapshot equalling the derived
 figures, the review queue being invisible to candidates and undeletable, the
-role-escalation guards, and atomic candidate reassignment.
+role-escalation guards, atomic candidate reassignment, and the ownership model:
+that a supplied responsible recruiter is discarded rather than trusted, that
+system- and email-created records still count towards the right recruiter, that
+a reassignment does not rewrite historical attribution, and that a handover does
+not erase the previous recruiter's own figures.
 
 Where an assertion once hardcoded a count from the seed, it now compares the
 RLS-filtered result against a superuser query implementing the intended rule.
@@ -417,7 +426,7 @@ cannot download candidate B's file" is an assertion, not a claim.
 bash scripts/db-mutation-test.sh
 ```
 
-Sixteen probes, each deliberately breaking one guarantee and asserting that a
+Twenty-two probes, each deliberately breaking one guarantee and asserting that a
 named assertion catches it: candidate isolation on candidates, applications,
 interviews, assessments, notifications and stored files; internal notes staying
 out of the portal; notification idempotency; cross-candidate attachment;
@@ -425,7 +434,11 @@ daily-report privacy between recruiters; report figures being derived rather
 than typed; the review queue staying internal; review history being
 undeletable; a manager being unable to create an administrator; a user being
 unable to change their own account status; and a transfer moving a candidate
-rather than adding a second owner.
+rather than adding a second owner; report figures following responsibility
+rather than keystrokes; ownership being derived rather than taken from the
+payload; historical ownership surviving a reassignment; ownership being
+uneditable after the event; a handover not erasing the previous recruiter's own
+figures; and those figures staying private between recruiters.
 
 A green suite that cannot go red is worthless. Several of these probes have
 failed on first run, and every time they exposed a weak *test* rather than a
@@ -457,12 +470,14 @@ Restoring `recruiter_id = (select auth.uid())` returned the suite to 253/253.
 npm test
 ```
 
-128 assertions over validation schemas, the config/SQL sync and the Build 5
-guarantees — including that the TypeScript permission catalogue matches the SQL
+157 assertions over validation schemas, the config/SQL sync and the Build 5
+and 5.1 guarantees — including that the TypeScript permission catalogue matches the SQL
 seed, that the enums match, that no sales role exists in either place, that
 nothing anywhere implements location-mismatch logic, that no schema or form
 control accepts a report figure, that no review label or generated reason uses
-accusatory language, and that the role-escalation guards exist in the SQL.
+accusatory language, that the role-escalation guards exist in the SQL, that no schema or command
+accepts an owner from the caller, and that the portal never carries the
+ownership column.
 
 ### 3. HTTP smoke test
 
@@ -703,19 +718,28 @@ longer true — Build 5 delivers those forms.
     suspend and disable existing accounts and change their roles; creating a new
     internal account still means creating the auth user in Supabase. The
     invitation flow belongs with the portal-invitation work.
-14. **A confirmed report cannot be reopened.** By design — confirmation freezes
+14. **Records whose candidate had no primary recruiter are unattributed.**
+    `responsible_recruiter_id` is NULL for them and they count towards nobody's
+    report. This is deliberate — see "Who owns the work is not who typed it" —
+    but it does mean assigning a recruiter late leaves earlier records
+    unattributed until somebody with `candidate.assign` corrects them. There is
+    no bulk re-attribution tool.
+15. **Ownership is fixed at the event, including through a reschedule.** Moving
+    an interview to a different day moves the figure to that day but leaves it
+    with the recruiter who owned it when it was booked. Recomputing on every
+    edit would let a reschedule quietly transfer somebody's work.
+16. **A confirmed report cannot be reopened.** By design — confirmation freezes
     the figures. If a correction is genuinely needed, the current answer is a
     review item recording what changed, not an edit to the frozen snapshot.
 
 ---
 
-## The one rule this build exists to enforce
+## The two rules these builds exist to enforce
 
-A daily report never accepts a number.
+### 1. A daily report never accepts a number
 
 If Dhrushil recorded 80 applications on 31 August, the report says 80 because
-`public.daily_report_metrics` counted 80 application rows whose `created_by` is
-Dhrushil and whose `application_date` is that day. Dhrushil is asked for notes,
+`public.daily_report_metrics` counted 80 rows. Dhrushil is asked for notes,
 observations and exceptions — judgement the records cannot supply — and for
 nothing else.
 
@@ -734,6 +758,52 @@ Neither is edited to match the other: the snapshot is what was reported on the
 day, the live count is what the records say now, and the difference is
 information rather than an error.
 
+### 2. Who owns the work is not who typed it
+
+Build 5 counted `created_by`. That is only accidentally the same question, and
+it comes apart the moment anything but the owning recruiter creates a record —
+a manager entering an application on somebody's behalf, or, shortly, a pipeline
+with no human actor at all.
+
+So every marketing record now carries two independent facts:
+
+| | Column | Answers |
+|---|---|---|
+| **Provenance** | `created_by`, `source_type`, `source_reference` | Who or what produced this row |
+| **Ownership** | `responsible_recruiter_id` | Who was accountable for this candidate when it happened |
+
+```
+RESPONSIBLE RECRUITER   Dhrushil
+CREATED BY              System
+SOURCE                  From email
+```
+
+`candidate_assignments` is still the canonical ownership model; the column is a
+materialisation of it, resolved at insert time from the assignment that was
+active on the record's own business date, and then left alone. It is never
+accepted from a caller: a BEFORE INSERT trigger overwrites whatever arrives, so
+no client can attribute work to somebody else. Changing it afterwards needs
+`candidate.assign`, which recruiters do not hold.
+
+**Why stored rather than joined.** Deriving ownership live was the first design
+and was rejected: reassigning a candidate would retroactively move every
+historical record to the new recruiter and rewrite last month's figures. A
+record created before a handover belongs to the recruiter who held the candidate
+then, and only a stored value can say so.
+
+**Why the metrics function is SECURITY DEFINER.** Access to a candidate follows
+the *active* assignment, so a recruiter who has since handed a candidate on can
+no longer read those rows — and their own historical figures silently fell to
+zero. The function now authorises explicitly instead: your own figures always,
+somebody else's only with `report.view_all` inside your business unit, anything
+else refused. That is the same rule as the SELECT policies on `daily_reports`.
+
+**What is deliberately not attributed.** Where the assignment history cannot
+answer — a record whose candidate had no primary recruiter at the time — the
+column is left NULL. Attributing it to its creator would be the exact
+conflation being removed, and guessing would be worse than an honest gap. The
+0030 backfill prints a count of any such rows.
+
 ---
 
 ## Next build
@@ -747,5 +817,10 @@ architecture anticipates them:
 - **Email intelligence** (`docs/architecture/10-email-intelligence.md`) — the
   pipeline the trigger-driven derivation and the review queue were designed to
   receive: source data, interpretation, and verified records kept separate.
+  Build 5.1 is the precondition for it. A record arriving from an email has no
+  human creator, and until the reports counted responsibility rather than
+  keystrokes, every such record would have counted towards nobody. The
+  attribution tests already simulate that pipeline; no mailbox is connected and
+  no email code exists.
 - **Portal invitations and rate limiting** — the remaining gap in account
   lifecycle.

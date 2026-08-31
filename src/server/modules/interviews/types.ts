@@ -41,5 +41,15 @@ export interface InterviewScheduleChange {
 export interface InterviewDetail extends InterviewListItem {
   notes: string | null;
   interviewerEmail: string | null;
+  sourceReference: string | null;
+  /**
+   * OWNERSHIP — who was accountable for this candidate when the interview was
+   * recorded. An interview created by an automated pipeline still belongs to
+   * the recruiter's day.
+   */
+  responsibleRecruiterId: string | null;
+  responsibleRecruiterName: string | null;
+  /** PROVENANCE — the person who created the row, null when nothing human did. */
+  createdByName: string | null;
   history: InterviewScheduleChange[];
 }

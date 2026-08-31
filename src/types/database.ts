@@ -183,6 +183,8 @@ export type ApplicationRow = {
   verified_at: string | null;
   verified_by: string | null;
   is_verified: boolean;
+  /** Ownership at event time. Not the same as created_by, which is provenance. */
+  responsible_recruiter_id: string | null;
   created_by: string | null;
   updated_by: string | null;
   created_at: string;
@@ -217,6 +219,8 @@ export type MarketingActivityRow = {
   verified_by: string | null;
   is_verified: boolean;
   visibility: DocumentVisibility;
+  /** Ownership at event time. Not the same as created_by, which is provenance. */
+  responsible_recruiter_id: string | null;
   created_by: string | null;
   created_at: string;
   updated_at: string;
@@ -266,6 +270,8 @@ export type InterviewRow = {
   verified_at: string | null;
   verified_by: string | null;
   is_verified: boolean;
+  /** Ownership at event time. Not the same as created_by, which is provenance. */
+  responsible_recruiter_id: string | null;
   created_by: string | null;
   updated_by: string | null;
   created_at: string;
@@ -307,6 +313,8 @@ export type AssessmentRow = {
   verified_at: string | null;
   verified_by: string | null;
   is_verified: boolean;
+  /** Ownership at event time. Not the same as created_by, which is provenance. */
+  responsible_recruiter_id: string | null;
   created_by: string | null;
   updated_by: string | null;
   created_at: string;

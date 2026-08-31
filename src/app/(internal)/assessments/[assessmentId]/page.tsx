@@ -9,6 +9,7 @@ import { AssessmentStatusBadge, SourceBadge } from '@/components/patterns/status
 import { Card, CardBody, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { formatDateTime, formatRelative } from '@/lib/utils/format';
+import { Attribution } from '@/components/patterns/attribution';
 import { AssessmentOutcomePanel } from './assessment-panels';
 
 export const metadata: Metadata = { title: 'Assessment' };
@@ -98,7 +99,6 @@ export default async function AssessmentDetailPage({
         'Not recorded'
       ),
     },
-    { label: 'Recorded by', value: assessment.createdByName ?? 'System' },
   ];
 
   return (
@@ -135,6 +135,16 @@ export default async function AssessmentDetailPage({
                 </div>
               ))}
             </dl>
+
+            <div className="mt-4 border-t border-[var(--border-subtle)] pt-3">
+              <Attribution
+                className="grid grid-cols-1 gap-3 sm:grid-cols-3"
+                responsibleRecruiterName={assessment.responsibleRecruiterName}
+                createdByName={assessment.createdByName}
+                source={assessment.sourceType}
+                sourceReference={assessment.sourceReference}
+              />
+            </div>
 
             {assessment.notes ? (
               <div className="mt-4 border-t border-[var(--border-subtle)] pt-3">

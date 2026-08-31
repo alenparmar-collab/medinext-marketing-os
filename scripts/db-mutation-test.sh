@@ -38,10 +38,11 @@ probe() {
   fi
   psql_run "-q -d ${MUT_DB} -f ${ROOT}/supabase/tests/02_rls_tests.sql" >/dev/null 2>&1 || true
 
-  local caught
+  local caught escaped
+  escaped="${expected_failure//\'/\'\'}"
   caught="$(psql_run "-tA -d ${MUT_DB} -c \"
     select count(*) from test.results
-     where not passed and name = '${expected_failure}'\"" | tr -d '[:space:]')"
+     where not passed and name = '${escaped}'\"" | tr -d '[:space:]')"
 
   admin_run "dropdb --if-exists ${MUT_DB}" >/dev/null 2>&1 || true
 
@@ -143,6 +144,30 @@ probe "users being unable to change their own account status" \
 probe "a transfer moving a candidate rather than adding an owner" \
   "@supabase/tests/mutations/assignment_transfer.sql" \
   "A TRANSFER LEAVES EXACTLY ONE ACTIVE PRIMARY RECRUITER"
+
+probe "report figures following responsibility rather than keystrokes" \
+  "@supabase/tests/mutations/attribution_by_creator.sql" \
+  "ATTRIBUTION BY OWNERSHIP DIFFERS FROM ATTRIBUTION BY CREATOR"
+
+probe "ownership being derived rather than taken from the payload" \
+  "@supabase/tests/mutations/attribution_trusts_payload.sql" \
+  "A SUPPLIED RESPONSIBLE RECRUITER IS DISCARDED, NOT TRUSTED"
+
+probe "historical ownership surviving a reassignment" \
+  "@supabase/tests/mutations/attribution_follows_current.sql" \
+  "HISTORICAL RECORDS KEEP THE RECRUITER WHO OWNED THEM AT THE TIME"
+
+probe "ownership being uneditable after the event" \
+  "@supabase/tests/mutations/attribution_editable.sql" \
+  "A RECRUITER CANNOT REATTRIBUTE A HISTORICAL RECORD TO THEMSELVES"
+
+probe "a handover not erasing the previous recruiter's own figures" \
+  "@supabase/tests/mutations/metrics_invoker.sql" \
+  "A HANDOVER DOES NOT ERASE THE FIGURES OF THE PREVIOUS RECRUITER"
+
+probe "figures staying private between recruiters" \
+  "@supabase/tests/mutations/metrics_ungated.sql" \
+  "A RECRUITER CANNOT READ THE FIGURES OF A COLLEAGUE"
 
 probe "cross-candidate attachment being structurally impossible" \
   "alter table public.interviews

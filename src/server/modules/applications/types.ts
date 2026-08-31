@@ -41,6 +41,16 @@ export interface ApplicationDetail {
   sourceType: SourceKind;
   sourceReference: string | null;
   isVerified: boolean;
+  /**
+   * OWNERSHIP: who was accountable for this candidate when the application was
+   * recorded. Derived from the assignment history at insert time and then left
+   * alone, so a later reassignment does not rewrite it.
+   *
+   * Deliberately separate from createdByName, which is PROVENANCE. A manager
+   * or an automated pipeline can create a record the recruiter owns.
+   */
+  responsibleRecruiterId: string | null;
+  responsibleRecruiterName: string | null;
   createdByName: string | null;
   createdAt: string;
   updatedAt: string;

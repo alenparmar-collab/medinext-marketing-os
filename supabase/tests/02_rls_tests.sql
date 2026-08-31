@@ -621,13 +621,20 @@ select test.check('timeline', 'a recruiter gets nothing from an unassigned candi
 -- SECTION 17 — Internal scope over interviews and assessments
 -- ---------------------------------------------------------------------------
 select test.check('interviews', 'admin sees every interview across both units',
-  test.count_as(:'ADMIN', 'select count(*) from public.interviews'), 5::bigint);
+  test.count_as(:'ADMIN', 'select count(*) from public.interviews'),
+  (select count(*) from public.interviews));
 
-select test.check('interviews', 'manager sees their unit''s 4 interviews only',
-  test.count_as(:'MANAGER', 'select count(*) from public.interviews'), 4::bigint);
+select test.check('interviews', 'manager sees their unit''s interviews only',
+  test.count_as(:'MANAGER', 'select count(*) from public.interviews'),
+  (select count(*) from public.interviews where business_unit_id = :'EU_UNIT'::uuid));
 
-select test.check('interviews', 'recruiter Salas sees only their candidates'' 3 interviews',
-  test.count_as(:'SALAS', 'select count(*) from public.interviews'), 3::bigint);
+select test.check('interviews', 'recruiter Salas sees only his assigned candidates'' interviews',
+  test.count_as(:'SALAS', 'select count(*) from public.interviews'),
+  (select count(*) from public.interviews i
+    where exists (
+      select 1 from public.candidate_assignments ca
+      where ca.candidate_id = i.candidate_id
+        and ca.user_id = :'SALAS'::uuid and ca.ends_on is null)));
 
 select test.check('interviews', 'RECRUITER CANNOT ACCESS AN UNAUTHORIZED CANDIDATE INTERVIEW',
   test.count_as(:'SALAS',
@@ -638,10 +645,16 @@ select test.check('interviews', 'cross-unit: EU manager cannot see the APAC inte
     'select count(*) from public.interviews where id = ' || quote_literal(:'IV_HIROSHI')), 0::bigint);
 
 select test.check('assessments', 'admin sees every assessment across both units',
-  test.count_as(:'ADMIN', 'select count(*) from public.assessments'), 4::bigint);
+  test.count_as(:'ADMIN', 'select count(*) from public.assessments'),
+  (select count(*) from public.assessments));
 
-select test.check('assessments', 'recruiter Salas sees only their candidates'' 2 assessments',
-  test.count_as(:'SALAS', 'select count(*) from public.assessments'), 2::bigint);
+select test.check('assessments', 'recruiter Salas sees only his assigned candidates'' assessments',
+  test.count_as(:'SALAS', 'select count(*) from public.assessments'),
+  (select count(*) from public.assessments s
+    where exists (
+      select 1 from public.candidate_assignments ca
+      where ca.candidate_id = s.candidate_id
+        and ca.user_id = :'SALAS'::uuid and ca.ends_on is null)));
 
 select test.check('assessments', 'RECRUITER CANNOT ACCESS AN UNAUTHORIZED CANDIDATE ASSESSMENT',
   test.count_as(:'SALAS',
@@ -650,8 +663,9 @@ select test.check('assessments', 'RECRUITER CANNOT ACCESS AN UNAUTHORIZED CANDID
 -- ---------------------------------------------------------------------------
 -- SECTION 18 — CANDIDATE ISOLATION on the new records  ***critical***
 -- ---------------------------------------------------------------------------
-select test.check('isolation', 'candidate Priya sees her own 2 interviews',
-  test.count_as(:'PRIYA_USER', 'select count(*) from public.interviews'), 2::bigint);
+select test.check('isolation', 'candidate Priya sees her own interviews and no others',
+  test.count_as(:'PRIYA_USER', 'select count(*) from public.interviews'),
+  (select count(*) from public.interviews where candidate_id = :'PRIYA'::uuid));
 
 select test.check('isolation', 'CANDIDATE A CANNOT READ INTERVIEWS OF CANDIDATE B',
   test.count_as(:'PRIYA_USER',
@@ -1032,16 +1046,26 @@ select test.check('reports', 'the derived count matches the actual application r
   (select applications from public.daily_report_metrics(
      '00000000-0000-4000-8000-000000000003', current_date - 3)),
   (select count(*) from public.applications
-    where created_by = '00000000-0000-4000-8000-000000000003'
+    where responsible_recruiter_id = '00000000-0000-4000-8000-000000000003'
       and application_date = current_date - 3));
 
 select test.check('reports', 'the derived response count matches the actual activity rows',
   (select recruiter_responses from public.daily_report_metrics(
      '00000000-0000-4000-8000-000000000003', current_date - 3)),
   (select count(*) from public.marketing_activities
-    where created_by = '00000000-0000-4000-8000-000000000003'
+    where responsible_recruiter_id = '00000000-0000-4000-8000-000000000003'
       and activity_type = 'recruiter_response'
       and (activity_date at time zone 'UTC')::date = current_date - 3));
+
+-- The assertion that makes the two rules above non-vacuous: the seed contains
+-- records Salas owns but did not create, so counting keystrokes gives a
+-- different, smaller answer than counting responsibility.
+select test.check('reports', 'ATTRIBUTION BY OWNERSHIP DIFFERS FROM ATTRIBUTION BY CREATOR',
+  (select applications from public.daily_report_metrics(
+     '00000000-0000-4000-8000-000000000003', current_date - 3))
+   > (select count(*) from public.applications
+       where created_by = '00000000-0000-4000-8000-000000000003'
+         and application_date = current_date - 3), true);
 
 select test.check('reports', 'a draft carries no snapshot at all',
   (select count(*) from public.daily_reports
@@ -1513,6 +1537,11 @@ select test.check('structure', 'no policy calls a helper unwrapped (per-row eval
 do $$
 declare
   c_lucia     constant uuid := '00000000-0000-4000-a000-000000000003';
+  -- APAC. Salas can neither read nor write anything of Hiroshi's, which is
+  -- what makes him the right subject for a cross-candidate grab. Lucia is
+  -- not: section 32 transfers her, so who owns her depends on run order.
+  c_hiroshi   constant uuid := '00000000-0000-4000-a000-000000000006';
+  c_apac      constant uuid := '00000000-0000-4000-9000-000000000002';
   c_eu_unit   constant uuid := '00000000-0000-4000-9000-000000000001';
   c_manager   constant uuid := '00000000-0000-4000-8000-000000000002';
   c_salas     constant uuid := '00000000-0000-4000-8000-000000000003';
@@ -1623,4 +1652,456 @@ begin
   insert into test.results (section, name, passed, detail)
   values ('assignments', 'transferring to the current holder is refused',
           v_blocked, case when v_blocked then 'ok' else 'a duplicate assignment was created' end);
+end $$;
+
+-- ===========================================================================
+-- BUILD 5.1 — Ownership and attribution
+-- ===========================================================================
+
+-- ---------------------------------------------------------------------------
+-- SECTION 33 — Who owns the work is not who typed it
+--
+-- Every assertion below distinguishes two facts about the same row:
+--   created_by / source_type  — provenance, who or what produced it
+--   responsible_recruiter_id  — ownership, who was accountable at the time
+--
+-- Re-runnable: each fixture is deleted before it is inserted, because the
+-- mutation harness runs this file twice and a block that aborts on the second
+-- pass silently drops every assertion below it.
+-- ---------------------------------------------------------------------------
+do $$
+declare
+  c_priya     constant uuid := '00000000-0000-4000-a000-000000000001';
+  c_dmitri    constant uuid := '00000000-0000-4000-a000-000000000004';
+  c_lucia     constant uuid := '00000000-0000-4000-a000-000000000003';
+  -- APAC. Salas can neither read nor write anything of Hiroshi's, which is
+  -- what makes him the right subject for a cross-candidate grab. Lucia is
+  -- not: section 32 transfers her, so who owns her depends on run order.
+  c_hiroshi   constant uuid := '00000000-0000-4000-a000-000000000006';
+  c_apac      constant uuid := '00000000-0000-4000-9000-000000000002';
+  c_eu        constant uuid := '00000000-0000-4000-9000-000000000001';
+  c_salas     constant uuid := '00000000-0000-4000-8000-000000000003';
+  c_halvorsen constant uuid := '00000000-0000-4000-8000-000000000004';
+  c_manager   constant uuid := '00000000-0000-4000-8000-000000000002';
+  c_period    constant uuid := '00000000-0000-4000-8c00-000000000001';
+  c_app_base  constant uuid := '00000000-0000-4000-8f00-000000000101';
+
+  a_manual  constant uuid := '00000000-0000-4000-8f00-0000000005a1';
+  a_system  constant uuid := '00000000-0000-4000-8f00-0000000005a2';
+  a_email   constant uuid := '00000000-0000-4000-8f00-0000000005a3';
+  a_dmitri  constant uuid := '00000000-0000-4000-8f00-0000000005a4';
+  i_manual  constant uuid := '00000000-0000-4000-9200-0000000005b1';
+  i_system  constant uuid := '00000000-0000-4000-9200-0000000005b2';
+  i_email   constant uuid := '00000000-0000-4000-9200-0000000005b3';
+  s_system  constant uuid := '00000000-0000-4000-9300-0000000005c1';
+  m_system  constant uuid := '00000000-0000-4000-9100-0000000005d1';
+
+  v_day       date := current_date - 3;
+  v_owner     uuid;
+  v_creator   uuid;
+  v_source    source_kind;
+  v_blocked   boolean;
+  v_lucia_owner uuid;
+  v_claimed     uuid;
+  v_still       uuid;
+  v_before    bigint;
+  v_after     bigint;
+begin
+  delete from public.marketing_activities where id = m_system;
+  delete from public.interviews  where id in (i_manual, i_system, i_email);
+  delete from public.assessments where id = s_system;
+  delete from public.marketing_activities
+   where application_id in (a_manual, a_system, a_email, a_dmitri);
+  delete from public.applications where id in (a_manual, a_system, a_email, a_dmitri);
+
+  -- ---- 1. Manual: the owning recruiter records their own work ------------
+  perform set_config('app.actor_id', c_salas::text, true);
+  insert into public.applications
+    (id, business_unit_id, candidate_id, marketing_period_id, company_name,
+     position_title, job_id, application_date, source_type, created_by,
+     responsible_recruiter_id)
+  values (a_manual, c_eu, c_priya, c_period, 'Aldergate Clinical',
+          'Data Manager', 'REF-5A1', v_day, 'manual', c_salas,
+          -- Supplied on purpose: the trigger must ignore it.
+          c_halvorsen);
+
+  select responsible_recruiter_id, created_by, source_type
+    into v_owner, v_creator, v_source
+    from public.applications where id = a_manual;
+
+  insert into test.results (section, name, passed, detail) values
+    ('attribution', 'manual application is owned by the responsible recruiter',
+     v_owner = c_salas, format('owner %s', v_owner)),
+    ('attribution', 'A SUPPLIED RESPONSIBLE RECRUITER IS DISCARDED, NOT TRUSTED',
+     v_owner <> c_halvorsen, format('owner %s', v_owner)),
+    ('attribution', 'manual application keeps its creator',
+     v_creator = c_salas, format('creator %s', v_creator)),
+    ('attribution', 'manual application keeps its source',
+     v_source = 'manual', format('source %s', v_source));
+
+  -- ---- 2. CASE A: an automated pipeline, no session actor ---------------
+  perform set_config('app.actor_id', '', true);
+  insert into public.applications
+    (id, business_unit_id, candidate_id, marketing_period_id, company_name,
+     position_title, job_id, application_date, source_type, source_reference,
+     created_by)
+  values (a_system, c_eu, c_priya, c_period, 'Beacon Trials',
+          'CDM Analyst', 'REF-5A2', v_day, 'system', 'pipeline:test:5a2', null);
+
+  select responsible_recruiter_id, created_by, source_type
+    into v_owner, v_creator, v_source
+    from public.applications where id = a_system;
+
+  insert into test.results (section, name, passed, detail) values
+    ('attribution', 'CASE A — SYSTEM-CREATED APPLICATION IS OWNED BY THE RECRUITER',
+     v_owner = c_salas, format('owner %s', v_owner)),
+    ('attribution', 'CASE A — a system-created record has no human creator',
+     v_creator is null, format('creator %s', v_creator)),
+    ('attribution', 'CASE A — source_type records that the system produced it',
+     v_source = 'system', format('source %s', v_source));
+
+  -- ---- 3. CASE B: an email-derived application --------------------------
+  insert into public.applications
+    (id, business_unit_id, candidate_id, marketing_period_id, company_name,
+     position_title, job_id, application_date, source_type, source_reference,
+     created_by)
+  values (a_email, c_eu, c_priya, c_period, 'Cranmere Bio',
+          'Clinical Programmer', 'REF-5A3', v_day, 'email_event',
+          'message-id:<test-5a3@example.invalid>', null);
+
+  select responsible_recruiter_id, source_type into v_owner, v_source
+    from public.applications where id = a_email;
+
+  insert into test.results (section, name, passed, detail) values
+    ('attribution', 'EMAIL-DERIVED APPLICATION IS OWNED BY THE RECRUITER',
+     v_owner = c_salas, format('owner %s', v_owner)),
+    ('attribution', 'an email-derived record keeps email provenance',
+     v_source = 'email_event', format('source %s', v_source));
+
+  -- ---- 4-6. Interviews: manual, system, email ---------------------------
+  perform set_config('app.actor_id', c_manager::text, true);
+  insert into public.interviews
+    (id, business_unit_id, candidate_id, application_id, interview_round,
+     scheduled_at, status, source_type, created_by)
+  values (i_manual, c_eu, c_priya, c_app_base, 2,
+          v_day::timestamptz + interval '9 hours', 'completed', 'manual', c_manager);
+
+  perform set_config('app.actor_id', '', true);
+  insert into public.interviews
+    (id, business_unit_id, candidate_id, application_id, interview_round,
+     scheduled_at, status, source_type, created_by)
+  values (i_system, c_eu, c_priya, c_app_base, 3,
+          v_day::timestamptz + interval '10 hours', 'completed', 'system', null);
+
+  insert into public.interviews
+    (id, business_unit_id, candidate_id, application_id, interview_round,
+     scheduled_at, status, source_type, source_reference, created_by)
+  values (i_email, c_eu, c_priya, c_app_base, 4,
+          v_day::timestamptz + interval '11 hours', 'completed', 'email_event',
+          'message-id:<test-5b3@example.invalid>', null);
+
+  insert into test.results (section, name, passed, detail) values
+    ('attribution', 'CASE C — a manager-created interview is owned by the recruiter',
+     (select responsible_recruiter_id from public.interviews where id = i_manual) = c_salas,
+     'manager typed it, recruiter owns it'),
+    ('attribution', 'CASE C — the manager remains the creator',
+     (select created_by from public.interviews where id = i_manual) = c_manager, 'ok'),
+    ('attribution', 'SYSTEM-CREATED INTERVIEW IS OWNED BY THE RECRUITER',
+     (select responsible_recruiter_id from public.interviews where id = i_system) = c_salas, 'ok'),
+    ('attribution', 'CASE B — EMAIL-CREATED INTERVIEW IS OWNED BY THE RECRUITER',
+     (select responsible_recruiter_id from public.interviews where id = i_email) = c_salas, 'ok'),
+    ('attribution', 'CASE B — the email interview keeps created_by null and source email',
+     (select created_by is null and source_type = 'email_event'
+        from public.interviews where id = i_email), 'ok');
+
+  -- ---- 7. Assessments ---------------------------------------------------
+  insert into public.assessments
+    (id, business_unit_id, candidate_id, application_id, assessment_type,
+     received_at, status, source_type, created_by)
+  values (s_system, c_eu, c_priya, c_app_base, 'Automated coding exercise',
+          v_day::timestamptz + interval '12 hours', 'completed', 'system', null);
+
+  insert into test.results (section, name, passed, detail) values
+    ('attribution', 'SYSTEM-CREATED ASSESSMENT IS OWNED BY THE RECRUITER',
+     (select responsible_recruiter_id from public.assessments where id = s_system) = c_salas, 'ok');
+
+  -- ---- 8. Marketing activities -----------------------------------------
+  insert into public.marketing_activities
+    (id, business_unit_id, candidate_id, application_id, marketing_period_id,
+     activity_type, activity_date, summary, source_type, created_by)
+  values (m_system, c_eu, c_priya, c_app_base, c_period, 'recruiter_response',
+          v_day::timestamptz + interval '13 hours', 'Automated reply detected',
+          'email_event', null);
+
+  insert into test.results (section, name, passed, detail) values
+    ('attribution', 'SYSTEM-CREATED ACTIVITY IS OWNED BY THE RECRUITER',
+     (select responsible_recruiter_id from public.marketing_activities where id = m_system) = c_salas, 'ok'),
+    ('attribution', 'an automatic activity stays identifiable as automatic',
+     (select source_type <> 'manual' and created_by is null
+        from public.marketing_activities where id = m_system), 'ok');
+
+  -- ---- 9-13. The figures follow ownership ------------------------------
+  insert into test.results (section, name, passed, detail) values
+    ('attribution', 'DAILY REPORT APPLICATIONS COUNT WHAT THE RECRUITER OWNS',
+     (select applications from public.daily_report_metrics(c_salas, v_day))
+       = (select count(*) from public.applications
+           where responsible_recruiter_id = c_salas and application_date = v_day), 'ok'),
+    ('attribution', 'SYSTEM-CREATED RECORDS APPEAR IN THE RECRUITER''S REPORT',
+     (select applications from public.daily_report_metrics(c_salas, v_day))
+       >= (select count(*) from public.applications
+            where responsible_recruiter_id = c_salas and application_date = v_day
+              and created_by is null), 'ok'),
+    ('attribution', 'DAILY REPORT INTERVIEWS COUNT WHAT THE RECRUITER OWNS',
+     (select interviews from public.daily_report_metrics(c_salas, v_day))
+       = (select count(*) from public.interviews
+           where responsible_recruiter_id = c_salas
+             and (scheduled_at at time zone 'UTC')::date = v_day), 'ok'),
+    ('attribution', 'DAILY REPORT ASSESSMENTS COUNT WHAT THE RECRUITER OWNS',
+     (select assessments from public.daily_report_metrics(c_salas, v_day))
+       = (select count(*) from public.assessments
+           where responsible_recruiter_id = c_salas
+             and (received_at at time zone 'UTC')::date = v_day), 'ok'),
+    ('attribution', 'DAILY REPORT REJECTIONS COUNT WHAT THE RECRUITER OWNS',
+     (select rejections from public.daily_report_metrics(c_salas, current_date - 2))
+       = (select count(*) from public.marketing_activities
+           where responsible_recruiter_id = c_salas and activity_type = 'rejection'
+             and (activity_date at time zone 'UTC')::date = current_date - 2), 'ok'),
+    ('attribution', 'a report counts nothing the recruiter merely typed for somebody else',
+     (select applications from public.daily_report_metrics(c_manager, v_day))
+       = (select count(*) from public.applications
+           where responsible_recruiter_id = c_manager and application_date = v_day), 'ok');
+
+  -- ---- 14-15. Reassignment ---------------------------------------------
+  -- Dmitri moved from Halvorsen to Salas two days ago. Records predating the
+  -- handover must stay with Halvorsen; new ones belong to Salas.
+  insert into test.results (section, name, passed, detail) values
+    ('attribution', 'HISTORICAL RECORDS KEEP THE RECRUITER WHO OWNED THEM AT THE TIME',
+     (select count(*) from public.applications
+       where candidate_id = c_dmitri and application_date < current_date - 2
+         and responsible_recruiter_id is distinct from c_halvorsen) = 0,
+     'pre-handover records still belong to Halvorsen'),
+    ('attribution', 'reassignment did not rewrite any historical attribution',
+     (select count(*) > 0 from public.applications
+       where candidate_id = c_dmitri and responsible_recruiter_id = c_halvorsen),
+     'at least one historical record survives the handover');
+
+  perform set_config('app.actor_id', c_salas::text, true);
+  insert into public.applications
+    (id, business_unit_id, candidate_id, company_name, position_title, job_id,
+     application_date, source_type, created_by)
+  values (a_dmitri, c_eu, c_dmitri, 'Post-handover Clinical', 'Data Manager',
+          'REF-5A4', current_date, 'manual', c_salas);
+
+  insert into test.results (section, name, passed, detail) values
+    ('attribution', 'A RECORD CREATED AFTER A HANDOVER BELONGS TO THE NEW RECRUITER',
+     (select responsible_recruiter_id from public.applications where id = a_dmitri) = c_salas,
+     'ok');
+
+  -- ---- 18. Ownership cannot be edited by a recruiter --------------------
+  v_blocked := false;
+  perform set_config('request.jwt.claims',
+    json_build_object('sub', c_salas, 'role', 'authenticated')::text, true);
+  set local role authenticated;
+  begin
+    update public.applications
+       set responsible_recruiter_id = c_salas
+     where id = (select id from public.applications
+                 where candidate_id = c_dmitri and responsible_recruiter_id = c_halvorsen
+                 limit 1);
+    if not found then v_blocked := true; end if;
+  exception when others then
+    v_blocked := true;
+  end;
+  reset role;
+
+  select responsible_recruiter_id into v_still
+    from public.applications
+   where candidate_id = c_dmitri and application_date < current_date - 2
+   limit 1;
+
+  insert into test.results (section, name, passed, detail) values
+    ('attribution', 'A RECRUITER CANNOT REATTRIBUTE A HISTORICAL RECORD TO THEMSELVES',
+     v_blocked, case when v_blocked then 'ok' else 'the update was accepted' end),
+    ('attribution', 'the historical record still names the recruiter who owned it',
+     v_still = c_halvorsen, format('owner is still %s', v_still));
+
+  -- ---- 19. A recruiter cannot claim another unit's candidate ------------
+  -- Salas cannot read or write anything of Hiroshi's, so the row is refused
+  -- before ownership is even reached.
+  v_blocked := false;
+  perform set_config('request.jwt.claims',
+    json_build_object('sub', c_salas, 'role', 'authenticated')::text, true);
+  set local role authenticated;
+  begin
+    insert into public.applications
+      (business_unit_id, candidate_id, company_name, position_title,
+       application_date, source_type, created_by, responsible_recruiter_id)
+    values (c_apac, c_hiroshi, 'Attempted Grab Ltd', 'Data Manager',
+            current_date, 'manual', c_salas, c_salas);
+  exception when others then
+    v_blocked := true;
+  end;
+  reset role;
+
+  insert into test.results (section, name, passed, detail) values
+    ('attribution', 'CROSS-CANDIDATE OWNERSHIP GRAB IS REFUSED',
+     v_blocked, case when v_blocked then 'ok' else 'the insert was accepted' end);
+
+  -- ---- 20. Naming somebody else as owner in the payload -----------------
+  -- Whoever currently holds Lucia, the payload claims the OTHER recruiter.
+  -- Resolved dynamically because section 32 transfers her, so hardcoding a
+  -- name here would assert run order rather than behaviour.
+  v_lucia_owner := util.responsible_recruiter(c_lucia, current_date);
+  v_claimed := case when v_lucia_owner = c_salas then c_halvorsen else c_salas end;
+
+  delete from public.applications where id = a_manual;
+  perform set_config('app.actor_id', v_lucia_owner::text, true);
+  insert into public.applications
+    (id, business_unit_id, candidate_id, company_name, position_title, job_id,
+     application_date, source_type, created_by, responsible_recruiter_id)
+  values (a_manual, c_eu, c_lucia, 'Ownership Claim Ltd', 'Data Manager',
+          'REF-5A1', current_date, 'manual', v_lucia_owner, v_claimed);
+
+  insert into test.results (section, name, passed, detail) values
+    ('attribution', 'A CREATOR CANNOT NAME A DIFFERENT RECRUITER AS OWNER',
+     (select responsible_recruiter_id from public.applications where id = a_manual)
+       = v_lucia_owner,
+     format('payload claimed %s, assignment says %s', v_claimed, v_lucia_owner));
+
+  -- ---- Reports are not the source of truth ------------------------------
+  select count(*) into v_before from public.applications;
+  perform public.daily_report_metrics(c_salas, v_day);
+  select count(*) into v_after from public.applications;
+
+  insert into test.results (section, name, passed, detail) values
+    ('attribution', 'reading the metrics alters no source record',
+     v_before = v_after, format('%s then %s', v_before, v_after));
+
+  perform set_config('app.actor_id', '', true);
+end $$;
+
+-- The column lives on candidate-visible rows, so a candidate can read the uuid.
+-- What they cannot do is turn it into a person: `users` refuses them every row
+-- but their own. Asserted rather than assumed.
+select test.check('attribution', 'A CANDIDATE CANNOT RESOLVE A RESPONSIBLE RECRUITER TO A PERSON',
+  test.count_as(:'PRIYA_USER',
+    'select count(*) from public.users where id in '
+    || '(select responsible_recruiter_id from public.applications)'), 0::bigint);
+
+select test.check('attribution', 'candidates are never named as a responsible recruiter',
+  (select count(*) from public.applications a
+    join public.user_roles ur on ur.user_id = a.responsible_recruiter_id
+   where ur.role_code = 'candidate'), 0::bigint);
+
+-- ---------------------------------------------------------------------------
+-- SECTION 34 — A recruiter's own figures are complete, and nobody else's leak
+--
+-- The figures must not depend on who currently holds the candidate: work done
+-- before a handover is still work that was done. And the completeness must not
+-- be bought by letting anyone read anyone's numbers.
+-- ---------------------------------------------------------------------------
+do $$
+declare
+  c_salas     constant uuid := '00000000-0000-4000-8000-000000000003';
+  c_halvorsen constant uuid := '00000000-0000-4000-8000-000000000004';
+  c_manager   constant uuid := '00000000-0000-4000-8000-000000000002';
+  c_rossi     constant uuid := '00000000-0000-4000-8000-000000000005';
+  c_priya_u   constant uuid := '00000000-0000-4000-8000-000000000011';
+  c_dmitri    constant uuid := '00000000-0000-4000-a000-000000000004';
+
+  v_day        date;
+  v_truth      bigint;
+  v_as_self    bigint;
+  v_as_manager bigint;
+  v_blocked    boolean;
+begin
+  -- A day on which Halvorsen owned a Dmitri record, before Salas took over.
+  select a.application_date into v_day
+    from public.applications a
+   where a.candidate_id = c_dmitri
+     and a.responsible_recruiter_id = c_halvorsen
+   order by a.application_date
+   limit 1;
+
+  if v_day is null then
+    insert into test.results (section, name, passed, detail)
+    values ('attribution', 'HANDOVER FIXTURE EXISTS', false,
+            'no pre-handover record for Dmitri — the completeness check is vacuous');
+    return;
+  end if;
+
+  select count(*) into v_truth
+    from public.applications
+   where responsible_recruiter_id = c_halvorsen and application_date = v_day;
+
+  -- As himself, having since lost the candidate to Salas.
+  perform set_config('request.jwt.claims',
+    json_build_object('sub', c_halvorsen, 'role', 'authenticated')::text, true);
+  set local role authenticated;
+  select applications into v_as_self from public.daily_report_metrics(c_halvorsen, v_day);
+  reset role;
+
+  insert into test.results (section, name, passed, detail) values
+    ('attribution', 'A HANDOVER DOES NOT ERASE THE FIGURES OF THE PREVIOUS RECRUITER',
+     v_as_self = v_truth, format('expected %s, got %s', v_truth, v_as_self));
+
+  -- The manager may read them too, because the report itself is unit-visible.
+  perform set_config('request.jwt.claims',
+    json_build_object('sub', c_manager, 'role', 'authenticated')::text, true);
+  set local role authenticated;
+  select applications into v_as_manager from public.daily_report_metrics(c_halvorsen, v_day);
+  reset role;
+
+  insert into test.results (section, name, passed, detail) values
+    ('attribution', 'a manager reads the same figures the recruiter sees',
+     v_as_manager = v_truth, format('expected %s, got %s', v_truth, v_as_manager));
+
+  -- A recruiter reading a colleague's figures is refused outright rather than
+  -- being handed a quietly filtered number.
+  v_blocked := false;
+  perform set_config('request.jwt.claims',
+    json_build_object('sub', c_salas, 'role', 'authenticated')::text, true);
+  set local role authenticated;
+  begin
+    perform public.daily_report_metrics(c_halvorsen, v_day);
+  exception when others then
+    v_blocked := true;
+  end;
+  reset role;
+
+  insert into test.results (section, name, passed, detail) values
+    ('attribution', 'A RECRUITER CANNOT READ THE FIGURES OF A COLLEAGUE',
+     v_blocked, case when v_blocked then 'ok' else 'the figures were returned' end);
+
+  -- Cross-unit, even for someone who can read every report in their own unit.
+  v_blocked := false;
+  perform set_config('request.jwt.claims',
+    json_build_object('sub', c_manager, 'role', 'authenticated')::text, true);
+  set local role authenticated;
+  begin
+    perform public.daily_report_metrics(c_rossi, v_day);
+  exception when others then
+    v_blocked := true;
+  end;
+  reset role;
+
+  insert into test.results (section, name, passed, detail) values
+    ('attribution', 'CROSS-UNIT: A MANAGER CANNOT READ ANOTHER UNIT''S FIGURES',
+     v_blocked, case when v_blocked then 'ok' else 'the figures were returned' end);
+
+  -- And a candidate cannot read anybody's, including their own recruiter's.
+  v_blocked := false;
+  perform set_config('request.jwt.claims',
+    json_build_object('sub', c_priya_u, 'role', 'authenticated')::text, true);
+  set local role authenticated;
+  begin
+    perform public.daily_report_metrics(c_salas, v_day);
+  exception when others then
+    v_blocked := true;
+  end;
+  reset role;
+
+  insert into test.results (section, name, passed, detail) values
+    ('attribution', 'A CANDIDATE CANNOT READ RECRUITER FIGURES',
+     v_blocked, case when v_blocked then 'ok' else 'the figures were returned' end);
 end $$;

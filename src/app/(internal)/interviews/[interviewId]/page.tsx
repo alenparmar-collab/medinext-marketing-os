@@ -10,6 +10,7 @@ import { Card, CardBody, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { formatScheduledTime, formatDateTime, formatRelative } from '@/lib/utils/format';
 import { INTERVIEW_STATUS_META } from '@/config/statuses';
+import { Attribution } from '@/components/patterns/attribution';
 import { ReschedulePanel, InterviewOutcomePanel } from './interview-panels';
 
 export const metadata: Metadata = { title: 'Interview' };
@@ -149,6 +150,17 @@ export default async function InterviewDetailPage({
                   </div>
                 ))}
               </dl>
+
+              {/* Whose day this counts towards, and who or what created it. */}
+              <div className="mt-4 border-t border-[var(--border-subtle)] pt-3">
+                <Attribution
+                  className="grid grid-cols-1 gap-3 sm:grid-cols-3"
+                  responsibleRecruiterName={interview.responsibleRecruiterName}
+                  createdByName={interview.createdByName}
+                  source={interview.sourceType}
+                  sourceReference={interview.sourceReference}
+                />
+              </div>
 
               {interview.notes ? (
                 <div className="mt-4 border-t border-[var(--border-subtle)] pt-3">

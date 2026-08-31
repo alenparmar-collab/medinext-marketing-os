@@ -16,7 +16,7 @@ const LIST_COLUMNS =
 // A separate literal rather than LIST_COLUMNS + '...': concatenation widens the
 // type to `string`, and Supabase infers the row shape from the literal.
 const DETAIL_COLUMNS =
-  'id, candidate_id, application_id, interview_round, scheduled_at, time_zone, meeting_url, interviewer_name, status, source_type, is_verified, notes, interviewer_email';
+  'id, candidate_id, application_id, interview_round, scheduled_at, time_zone, meeting_url, interviewer_name, status, source_type, is_verified, notes, interviewer_email, responsible_recruiter_id, created_by, source_reference';
 
 type Ctx = Awaited<ReturnType<typeof createServerSupabase>>;
 
@@ -123,6 +123,20 @@ export async function getInterview(interviewId: string): Promise<InterviewDetail
   const [base] = await decorate(supabase, [data]);
   if (!base) throw new AppError('NOT_FOUND', 'Interview not found.');
 
+  // Ownership and provenance are two different people, so both names are
+  // resolved and shown separately on the page.
+  const attributionIds = [data.responsible_recruiter_id, data.created_by].filter(
+    Boolean,
+  ) as string[];
+  const attributionNames = new Map<string, string>();
+  if (attributionIds.length > 0) {
+    const { data: people } = await supabase
+      .from('users')
+      .select('id, full_name')
+      .in('id', attributionIds);
+    for (const person of people ?? []) attributionNames.set(person.id, person.full_name);
+  }
+
   const { data: history } = await supabase
     .from('interview_schedule_history')
     .select(
@@ -143,6 +157,12 @@ export async function getInterview(interviewId: string): Promise<InterviewDetail
     ...base,
     notes: data.notes,
     interviewerEmail: data.interviewer_email,
+    sourceReference: data.source_reference,
+    responsibleRecruiterId: data.responsible_recruiter_id,
+    responsibleRecruiterName: data.responsible_recruiter_id
+      ? (attributionNames.get(data.responsible_recruiter_id) ?? null)
+      : null,
+    createdByName: data.created_by ? (attributionNames.get(data.created_by) ?? null) : null,
     history: rows.map((h) => ({
       id: h.id,
       changeKind: h.change_kind,
