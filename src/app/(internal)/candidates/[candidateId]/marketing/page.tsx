@@ -3,6 +3,10 @@ import { requireInternal, can } from '@/server/auth/actor';
 import { getCandidate } from '@/server/modules/candidates/queries';
 import { listCandidateActivities } from '@/server/modules/activities/queries';
 import { listApplications } from '@/server/modules/applications/queries';
+import { listInterviews } from '@/server/modules/interviews/queries';
+import { listAssessments } from '@/server/modules/assessments/queries';
+import { InterviewStatusBadge, AssessmentStatusBadge } from '@/components/patterns/status-badge';
+import { formatScheduledTime } from '@/lib/utils/format';
 import { Card, CardBody, CardHeader, CardTitle } from '@/components/ui/card';
 import { MarketingStatusBadge, ActivityTypeBadge } from '@/components/patterns/status-badge';
 import { EmptyState } from '@/components/patterns/states';
@@ -19,10 +23,12 @@ export default async function CandidateMarketingPage({
   const actor = await requireInternal();
   const { candidateId } = await params;
 
-  const [candidate, activities, applications] = await Promise.all([
+  const [candidate, activities, applications, interviews, assessments] = await Promise.all([
     getCandidate(candidateId),
     listCandidateActivities(candidateId, 100),
     listApplications({ candidateId, limit: 100 }),
+    listInterviews({ candidateId, limit: 50 }),
+    listAssessments({ candidateId, limit: 50 }),
   ]);
 
   return (
@@ -78,6 +84,69 @@ export default async function CandidateMarketingPage({
       </div>
 
       <div className="flex flex-col gap-4">
+        <Card>
+          <CardHeader>
+            <CardTitle>Interviews</CardTitle>
+            <span className="tabular text-[13px] text-[var(--text-muted)]">{interviews.length}</span>
+          </CardHeader>
+          <CardBody>
+            {interviews.length === 0 ? (
+              <p className="text-[13px] text-[var(--text-muted)]">
+                No interviews recorded for this candidate.
+              </p>
+            ) : (
+              <ul className="flex flex-col gap-2.5">
+                {interviews.map((i) => (
+                  <li key={i.id} className="flex flex-col gap-0.5">
+                    <span className="text-[13.5px] text-[var(--text-primary)]">
+                      Round {i.interviewRound} · {i.companyName}
+                    </span>
+                    <span className="tabular text-[12.5px] text-[var(--text-secondary)]">
+                      {formatScheduledTime(i.scheduledAt, i.timeZone)}
+                    </span>
+                    <InterviewStatusBadge status={i.status} />
+                  </li>
+                ))}
+              </ul>
+            )}
+          </CardBody>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Assessments</CardTitle>
+            <span className="tabular text-[13px] text-[var(--text-muted)]">{assessments.length}</span>
+          </CardHeader>
+          <CardBody>
+            {assessments.length === 0 ? (
+              <p className="text-[13px] text-[var(--text-muted)]">
+                No assessments recorded for this candidate.
+              </p>
+            ) : (
+              <ul className="flex flex-col gap-2.5">
+                {assessments.map((a) => (
+                  <li key={a.id} className="flex flex-col gap-0.5">
+                    <span className="text-[13.5px] text-[var(--text-primary)]">
+                      {a.assessmentType} · {a.companyName}
+                    </span>
+                    <span className="tabular text-[12.5px] text-[var(--text-secondary)]">
+                      {a.deadline ? `Due ${formatDate(a.deadline)}` : 'No deadline given'}
+                    </span>
+                    <span className="flex items-center gap-2">
+                      <AssessmentStatusBadge status={a.status} />
+                      {a.isOverdue ? (
+                        <span className="text-[12px] font-medium text-[var(--color-critical)]">
+                          Overdue
+                        </span>
+                      ) : null}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </CardBody>
+        </Card>
+
         <Card>
           <CardHeader>
             <CardTitle>Marketing periods</CardTitle>

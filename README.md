@@ -4,11 +4,11 @@ Marketing operations platform for candidate marketing. Replaces an Excel-based
 workflow with an auditable system, and gives each candidate a portal showing
 only their own information.
 
-**Current stage: Build 3 — candidate marketing core.** The foundation from
-Build 2 plus applications, marketing activities, the candidate timeline,
-internal notes and a candidate portal that shows a candidate their own
-applications and activity. Interviews, assessments, daily reports,
-notifications and the review queue remain navigation only.
+**Current stage: Build 4 — interviews, assessments, notifications and
+documents.** Interviews and assessments are first-class records with scheduling
+history and outcomes, notifications reach candidates and their recruiters
+idempotently, and documents can actually be uploaded and downloaded through
+signed URLs. Daily reports and the review queue remain navigation only.
 
 ---
 
@@ -52,8 +52,13 @@ notifications and the review queue remain navigation only.
 | Candidate workspace with Overview / Applications / Marketing / Timeline / Documents | Done |
 | Internal notes with author-only editing | Done |
 | Candidate portal: own applications and activity | Done |
-| Interviews, assessments, daily reports, notifications, review queue | Navigation only |
-| Document upload and download | Metadata and policies only — no file transfer yet |
+| Interviews with reschedule history, statuses and outcomes | Done |
+| Assessments with deadlines, statuses and outcomes | Done |
+| Notifications, idempotent, with a read/unread centre | Done |
+| Document upload and signed-URL download, including candidate upload | Done |
+| Recruiter "needs your attention" queue | Done |
+| Candidate portal: interviews, assessments, notifications, documents | Done |
+| Daily reports, review queue | Navigation only |
 | Email ingestion, AI, payments, sales, WhatsApp, mobile | Out of scope |
 
 ---
@@ -177,6 +182,12 @@ Forward-only SQL in `supabase/migrations/`, applied in filename order.
 | `0015_application_automation.sql` | History and activity triggers, `candidate_counts`, `candidate_timeline` |
 | `0016_build3_permissions.sql` | Application and activity permissions |
 | `0017_status_change_rpc.sql` | Atomic `change_application_status` with an optional history note |
+| `0018_interviews_and_assessments.sql` | `interviews`, `interview_schedule_history`, `assessments`, activity links |
+| `0019_notifications.sql` | `notifications` with the dedupe key, `emit_notification`, `candidate_audience` |
+| `0020_build4_rls.sql` | RLS and grants for the four new tables |
+| `0021_build4_automation.sql` | Activity mirroring, schedule history, notification triggers, `reschedule_interview` |
+| `0022_build4_permissions.sql` | Interview, assessment and document-download permissions |
+| `0023_candidate_documents.sql` | Candidate upload — the single portal write path |
 
 With the Supabase CLI:
 
@@ -285,6 +296,11 @@ makes it a seed row.
 | Publish a document to the portal | ✓ | ✓ | — | — |
 | View, create and update applications | ✓ | ✓ | ✓ | — |
 | Delete an application | ✓ | ✓ | — | — |
+| Schedule, reschedule and update interviews | ✓ | ✓ | ✓ | — |
+| Record and update assessments | ✓ | ✓ | ✓ | — |
+| Delete an interview or assessment | ✓ | ✓ | — | — |
+| Download a candidate document | ✓ | ✓ | ✓ | own only |
+| Upload a document | ✓ | ✓ | ✓ | own only |
 | Record marketing activity | ✓ | ✓ | ✓ | — |
 | Manage users, roles, permissions, audit | ✓ | — | — | — |
 | Read across business units | ✓ | — | — | — |
@@ -363,13 +379,20 @@ policies; it exercises them.
 npm run db:test
 ```
 
-121 assertions covering: anonymous access, role resolution, internal scope,
+187 assertions covering: anonymous access, role resolution, internal scope,
 cross-tenant isolation, candidate isolation in both directions on candidates,
-applications, activities and the timeline, internal-note isolation, document
-authorization, write authorization, audit capture and immutability, the
-automation that derives history and activities, derived counts, assignment and
-account lifecycle, and structural guarantees generated from the catalogue (so a
-table added in a later build fails the suite until it is classified).
+applications, activities, interviews, assessments, notifications, documents and
+the timeline, internal-note isolation, storage-object authorization, write
+authorization, audit capture and immutability, the automation that derives
+history and activities, notification idempotency, cross-candidate attachment
+attacks, derived counts, assignment and account lifecycle, and structural
+guarantees generated from the catalogue (so a table added in a later build
+fails the suite until it is classified).
+
+**Storage policies are executed, not assumed.** The local shim provides
+`storage.buckets`, `storage.objects` and `storage.foldername`, so the real
+policies from migrations 0011 and 0023 run against real rows. "Candidate A
+cannot download candidate B's file" is an assertion, not a claim.
 
 **Proving the suite can fail:**
 
@@ -377,10 +400,14 @@ table added in a later build fails the suite until it is classified).
 bash scripts/db-mutation-test.sh
 ```
 
-Three probes, each deliberately breaking one guarantee — candidate isolation on
-the candidate record, candidate isolation on applications, and internal notes
-staying out of the portal — and asserting that a named assertion catches it. A
-green suite that cannot go red is worthless; run this after any policy change.
+Nine probes, each deliberately breaking one guarantee and asserting that a
+named assertion catches it: candidate isolation on candidates, applications,
+interviews, assessments, notifications and stored files; internal notes staying
+out of the portal; notification idempotency; and cross-candidate attachment.
+
+A green suite that cannot go red is worthless. Two of these probes failed on
+first run and exposed weak tests rather than weak policies — see the technical
+decisions below. Run this after any policy change.
 
 ### 2. Unit tests
 
@@ -388,7 +415,7 @@ green suite that cannot go red is worthless; run this after any policy change.
 npm test
 ```
 
-59 assertions over validation schemas and the config/SQL sync — including that
+100 assertions over validation schemas and the config/SQL sync — including that
 the TypeScript permission catalogue matches the SQL seed, that the enums match,
 that no sales role exists in either place, and that nothing anywhere implements
 location-mismatch logic.
@@ -499,6 +526,48 @@ read their `business_unit_id` from the candidate row under RLS. The composite
 foreign key would reject a mismatch anyway, but a field that exists only to be
 echoed back is a footgun.
 
+**Interviews and assessments do not duplicate company or position.** Both are
+derived from the application. Copying them onto the child record would create a
+second place for the same fact to be wrong.
+
+**Neither accepts a candidate id from the caller.** It is read from the
+application server-side. A client-supplied candidate id could only ever agree
+with that or be an attack, and the composite foreign key to
+`applications(id, candidate_id)` makes a mismatch impossible at the database
+level regardless.
+
+**Notification idempotency is structural, not procedural.** Every notification
+carries a `dedupe_key` describing the *event*, with a unique index per
+recipient, and producers insert with `on conflict do nothing`. The email
+pipeline in a later build will retry — a re-delivered message, a re-run
+classifier, a restarted job — and this is what stops the first week of that
+feature being noise.
+
+**A trigger cannot leak an internal note.** Activity visibility is defaulted
+from the activity type by a trigger that forces `note` to internal regardless of
+what the caller passes.
+
+**Download mints a signed URL rather than proxying bytes.** A 60-second URL and
+a redirect, so résumés and identity documents never pass through the function's
+memory or logs. Authorization is the database's: the metadata read and the
+signing call both run under the caller's session, so RLS and the storage policy
+each get a say.
+
+**Uploaded file names are checked for path segments.** The name becomes part of
+a storage key whose first segment is the authorization key, so a traversal
+segment reaching it would place a file outside the candidate's own folder.
+
+**Derived flags belong in the query layer.** `isUpcoming` and `isOverdue` are
+computed once when the DTO is built, not recomputed in each page — two views
+would otherwise be free to disagree, and reading the clock during render is
+impure.
+
+**Decision D-01 was narrowed, not abandoned.** The portal was strictly
+read-only through Builds 2 and 3. Build 4 adds exactly one write path —
+a candidate uploading their own document, at `candidate_visible` visibility
+only, with no update or delete. Migration 0023 is the whole of that change, kept
+in one file so the exception stays visible.
+
 **Seed UUIDs must be RFC 4122 valid.** PostgreSQL accepts any 32 hex digits;
 Zod's `.uuid()` enforces the version and variant nibbles. An id that Postgres
 likes and Zod rejects passes every database test and then fails the first time a
@@ -548,11 +617,12 @@ These are enforced, not merely documented:
 2. **`src/types/database.ts` is hand-maintained.** The Supabase CLI is not part
    of this environment. Regenerate with `npm run db:types` once a project
    exists, and add a CI check that fails on a diff.
-3. **Document upload and download are not implemented.** The table, policies,
-   bucket and storage path convention exist; the file transfer does not. The
-   portal says so rather than listing a file it cannot serve.
-4. **The candidate portal is read-only** (decision D-01). Candidates hold SELECT
-   policies and nothing else, on any table.
+3. **Storage round trips are not executed against a live Supabase project.**
+   The storage *policies* are executed locally against a shim and are asserted;
+   the actual upload and signed-URL download call Supabase Storage and have not
+   been exercised end to end here.
+4. **The candidate portal is read-only apart from document upload** (decision
+   D-01, narrowed by migration 0023).
 5. **`visa_status` is free text.** Modelling it as an enum or lookup would mean
    inventing values the business has not supplied — open decision D-06.
 6. **No rate limiting.** Planned for the build that adds portal invitations and
@@ -560,6 +630,13 @@ These are enforced, not merely documented:
 7. **Marketing period creation has no UI.** The command, schema and policies
    exist and are tested; the form is not built. Periods are visible on the
    candidate's Marketing tab and in the seed.
+11. **Interview and assessment creation has no UI form yet.** The schemas,
+    commands, actions, permissions and policies are complete and tested, and the
+    records are read everywhere they matter; the create and edit forms are not
+    built. Seeded records exercise every read path.
+12. **Notifications are in-app only.** `notification_deliveries` from the
+    original architecture is not built; an email channel would slot in beneath
+    the same producer.
 8. **No pgTAP.** The RLS suite is plain SQL with a small assertion harness,
    which needs no extension and runs anywhere PostgreSQL does.
 9. **Audit partitions are not auto-created.** `util.ensure_audit_partition()`
@@ -573,9 +650,8 @@ These are enforced, not merely documented:
 
 ## Next build
 
-Build 4, per the plan in
+Build 5, per the plan in
 [`docs/architecture/14-implementation-plan.md`](./docs/architecture/14-implementation-plan.md):
-interviews and assessments as first-class records (currently they exist only as
-activity types), promoted from `marketing_activities` into their own tables with
-scheduling, reschedule history and outcomes — plus notifications, and the
-document upload and download flow.
+daily reports derived from the records rather than typed in, the review queue
+seeded by system consistency checks, and user and role administration — the last
+of which the navigation still marks as planned.

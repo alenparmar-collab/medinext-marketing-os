@@ -25,6 +25,9 @@ import type {
   DocumentVisibility,
   ApplicationStatus,
   ActivityType,
+  InterviewStatus,
+  AssessmentStatus,
+  NotificationType,
 } from '@/config/statuses';
 import type { RoleCode } from '@/config/permissions';
 
@@ -240,6 +243,85 @@ export type CandidateTimelineRow = {
   actor_name: string | null;
 };
 
+export type InterviewRow = {
+  id: string;
+  business_unit_id: string;
+  candidate_id: string;
+  application_id: string;
+  interview_round: number;
+  scheduled_at: string | null;
+  time_zone: string | null;
+  meeting_url: string | null;
+  interviewer_name: string | null;
+  interviewer_email: string | null;
+  status: InterviewStatus;
+  notes: string | null;
+  source_type: SourceKind;
+  source_reference: string | null;
+  verified_at: string | null;
+  verified_by: string | null;
+  is_verified: boolean;
+  created_by: string | null;
+  updated_by: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type InterviewScheduleHistoryRow = {
+  id: string;
+  interview_id: string;
+  change_kind: string;
+  previous_scheduled_at: string | null;
+  previous_time_zone: string | null;
+  previous_status: InterviewStatus | null;
+  new_scheduled_at: string | null;
+  new_time_zone: string | null;
+  new_status: InterviewStatus | null;
+  reason: string | null;
+  changed_at: string;
+  changed_by: string | null;
+  source_type: SourceKind;
+  source_reference: string | null;
+};
+
+export type AssessmentRow = {
+  id: string;
+  business_unit_id: string;
+  candidate_id: string;
+  application_id: string;
+  assessment_type: string;
+  assessment_url: string | null;
+  received_at: string;
+  deadline: string | null;
+  completed_at: string | null;
+  status: AssessmentStatus;
+  outcome: string | null;
+  notes: string | null;
+  source_type: SourceKind;
+  source_reference: string | null;
+  verified_at: string | null;
+  verified_by: string | null;
+  is_verified: boolean;
+  created_by: string | null;
+  updated_by: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type NotificationRow = {
+  id: string;
+  business_unit_id: string;
+  recipient_id: string;
+  notification_type: NotificationType;
+  title: string;
+  message: string | null;
+  entity_type: string | null;
+  entity_id: string | null;
+  dedupe_key: string;
+  read_at: string | null;
+  created_at: string;
+};
+
 export type RolePermissionRow = {
   role_code: RoleCode;
   permission_code: string;
@@ -268,9 +350,22 @@ export type Database = {
       applications: TableDef<ApplicationRow>;
       application_status_history: TableDef<ApplicationStatusHistoryRow>;
       marketing_activities: TableDef<MarketingActivityRow>;
+      interviews: TableDef<InterviewRow>;
+      interview_schedule_history: TableDef<InterviewScheduleHistoryRow>;
+      assessments: TableDef<AssessmentRow>;
+      notifications: TableDef<NotificationRow>;
     };
     Views: { [_ in never]: never };
     Functions: {
+      reschedule_interview: {
+        Args: {
+          p_interview_id: string;
+          p_scheduled_at: string;
+          p_time_zone?: string | null;
+          p_reason?: string | null;
+        };
+        Returns: string;
+      };
       change_application_status: {
         Args: { p_application_id: string; p_status: ApplicationStatus; p_note?: string | null };
         Returns: ApplicationStatus;
@@ -297,6 +392,9 @@ export type Database = {
       marketing_status: MarketingStatus;
       application_status: ApplicationStatus;
       activity_type: ActivityType;
+      interview_status: InterviewStatus;
+      assessment_status: AssessmentStatus;
+      notification_type: NotificationType;
       assignment_type: AssignmentType;
       document_visibility: DocumentVisibility;
       user_status: UserStatus;

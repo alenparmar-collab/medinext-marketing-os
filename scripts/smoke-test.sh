@@ -50,9 +50,10 @@ echo "==> Public endpoints"
 
 echo "==> Protected routes refuse an unauthenticated caller"
 for path in / /overview /candidates /candidates/new /marketing /settings /team \
-            /applications /applications/new \
+            /applications /applications/new /interviews /assessments /notifications \
             /portal /portal/profile /portal/marketing /portal/documents \
-            /portal/applications /portal/activity; do
+            /portal/applications /portal/activity /portal/interviews \
+            /portal/assessments /portal/notifications; do
   code="$(curl -s -o /dev/null -w '%{http_code}' "${BASE}${path}")"
   target="$(curl -s -o /dev/null -w '%{redirect_url}' "${BASE}${path}")"
   if [[ "${code}" == "307" && "${target}" == *"/sign-in"* ]]; then
@@ -65,6 +66,15 @@ done
 echo "==> Sign-out is POST only"
 [[ "$(curl -s -o /dev/null -w '%{http_code}' "${BASE}/auth/sign-out")" == "405" ]] \
   && pass "GET /auth/sign-out is rejected" || fail "GET /auth/sign-out is rejected" "expected 405"
+
+echo "==> Document download refuses an unauthenticated caller"
+DL_CODE="$(curl -s -o /dev/null -w '%{http_code}' \
+  "${BASE}/api/documents/00000000-0000-4000-8d00-000000000001/download")"
+if [[ "${DL_CODE}" == "307" || "${DL_CODE}" == "401" || "${DL_CODE}" == "404" ]]; then
+  pass "document download is not open to anonymous callers (${DL_CODE})"
+else
+  fail "document download is not open to anonymous callers" "got ${DL_CODE}"
+fi
 
 echo "==> Security headers"
 HEADERS="$(curl -s -D- -o /dev/null "${BASE}/sign-in")"

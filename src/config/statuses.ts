@@ -170,3 +170,143 @@ export const SOURCE_KIND_META: Record<SourceKind, { label: string; tone: StatusT
   system:       { label: 'System',           tone: 'neutral' },
   api:          { label: 'API',              tone: 'neutral' },
 };
+
+/* ===========================================================================
+ * INTERVIEWS
+ *
+ * Centralised so no status string is written into a component. The UI renders
+ * through INTERVIEW_STATUS_META and nothing else decides what a status is
+ * called or how it looks.
+ * =========================================================================== */
+export const INTERVIEW_STATUSES = [
+  'scheduled',
+  'completed',
+  'rescheduled',
+  'cancelled',
+  'no_show',
+  'passed',
+  'failed',
+] as const;
+
+export type InterviewStatus = (typeof INTERVIEW_STATUSES)[number];
+
+export const INTERVIEW_STATUS_META: Record<
+  InterviewStatus,
+  { label: string; tone: StatusTone; order: number; isUpcoming: boolean }
+> = {
+  scheduled:   { label: 'Scheduled',   tone: 'info',     order: 10, isUpcoming: true },
+  rescheduled: { label: 'Rescheduled', tone: 'caution',  order: 20, isUpcoming: true },
+  completed:   { label: 'Completed',   tone: 'neutral',  order: 30, isUpcoming: false },
+  passed:      { label: 'Passed',      tone: 'positive', order: 40, isUpcoming: false },
+  failed:      { label: 'Failed',      tone: 'caution',  order: 50, isUpcoming: false },
+  no_show:     { label: 'No show',     tone: 'caution',  order: 60, isUpcoming: false },
+  cancelled:   { label: 'Cancelled',   tone: 'muted',    order: 70, isUpcoming: false },
+};
+
+/** Statuses that mean the interview has not happened yet. */
+export const UPCOMING_INTERVIEW_STATUSES = INTERVIEW_STATUSES.filter(
+  (s) => INTERVIEW_STATUS_META[s].isUpcoming,
+);
+
+export const INTERVIEW_STATUSES_ORDERED = [...INTERVIEW_STATUSES].sort(
+  (a, b) => INTERVIEW_STATUS_META[a].order - INTERVIEW_STATUS_META[b].order,
+);
+
+/* ===========================================================================
+ * ASSESSMENTS
+ * =========================================================================== */
+export const ASSESSMENT_STATUSES = [
+  'pending',
+  'in_progress',
+  'completed',
+  'expired',
+  'passed',
+  'failed',
+] as const;
+
+export type AssessmentStatus = (typeof ASSESSMENT_STATUSES)[number];
+
+export const ASSESSMENT_STATUS_META: Record<
+  AssessmentStatus,
+  { label: string; tone: StatusTone; order: number; isOpen: boolean }
+> = {
+  pending:     { label: 'Pending',     tone: 'info',     order: 10, isOpen: true },
+  in_progress: { label: 'In progress', tone: 'info',     order: 20, isOpen: true },
+  completed:   { label: 'Completed',   tone: 'neutral',  order: 30, isOpen: false },
+  passed:      { label: 'Passed',      tone: 'positive', order: 40, isOpen: false },
+  failed:      { label: 'Failed',      tone: 'caution',  order: 50, isOpen: false },
+  expired:     { label: 'Expired',     tone: 'muted',    order: 60, isOpen: false },
+};
+
+/** Statuses that still need something from the candidate. */
+export const OPEN_ASSESSMENT_STATUSES = ASSESSMENT_STATUSES.filter(
+  (s) => ASSESSMENT_STATUS_META[s].isOpen,
+);
+
+export const ASSESSMENT_STATUSES_ORDERED = [...ASSESSMENT_STATUSES].sort(
+  (a, b) => ASSESSMENT_STATUS_META[a].order - ASSESSMENT_STATUS_META[b].order,
+);
+
+/* ===========================================================================
+ * NOTIFICATIONS
+ * =========================================================================== */
+export const NOTIFICATION_TYPES = [
+  'interview_scheduled',
+  'interview_updated',
+  'interview_cancelled',
+  'assessment_received',
+  'assessment_updated',
+  'application_updated',
+  'important_marketing_update',
+] as const;
+
+export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
+
+export const NOTIFICATION_TYPE_META: Record<
+  NotificationType,
+  { label: string; tone: StatusTone }
+> = {
+  interview_scheduled:        { label: 'Interview scheduled', tone: 'info' },
+  interview_updated:          { label: 'Interview updated',   tone: 'caution' },
+  interview_cancelled:        { label: 'Interview cancelled', tone: 'muted' },
+  assessment_received:        { label: 'Assessment received', tone: 'info' },
+  assessment_updated:         { label: 'Assessment updated',  tone: 'caution' },
+  application_updated:        { label: 'Application updated', tone: 'neutral' },
+  important_marketing_update: { label: 'Marketing update',    tone: 'info' },
+};
+
+/**
+ * Where a notification points. Kept here so the notification centre resolves a
+ * link from data rather than a switch buried in a component.
+ */
+export function notificationHref(
+  entityType: string | null,
+  entityId: string | null,
+  audience: 'internal' | 'portal',
+): string | null {
+  if (!entityType || !entityId) return null;
+
+  if (audience === 'portal') {
+    switch (entityType) {
+      case 'interview':
+        return '/portal/interviews';
+      case 'assessment':
+        return '/portal/assessments';
+      case 'application':
+        return '/portal/applications';
+      default:
+        return null;
+    }
+  }
+
+  switch (entityType) {
+    case 'application':
+      return `/applications/${entityId}`;
+    case 'interview':
+      return '/interviews';
+    case 'assessment':
+      return '/assessments';
+    default:
+      return null;
+  }
+}

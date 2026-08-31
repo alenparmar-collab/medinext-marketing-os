@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { PERMISSIONS, ROLES } from '@/config/permissions';
@@ -20,6 +20,12 @@ const sql = (file: string) =>
  * otherwise a comment explaining that we never compare two columns trips the
  * test asserting we never compare them.
  */
+
+/**
+ * Permissions are seeded across several migrations as builds add domains, and a
+ * hardcoded list here would silently go stale every time one is added — which
+ * is exactly what happened. Read them all instead.
+ */
 function sqlCodeOnly(text: string): string {
   return text
     .split('\n')
@@ -28,12 +34,12 @@ function sqlCodeOnly(text: string): string {
     .replace(/comment on [\s\S]*?;/gi, '');
 }
 
-/**
- * Permissions are seeded across more than one migration as builds add domains.
- * Reading only the first would make every later permission look undeclared.
- */
-const referenceData =
-  sql('migrations/0012_reference_data.sql') + '\n' + sql('migrations/0016_build3_permissions.sql');
+const migrationsDir = resolve(process.cwd(), 'supabase/migrations');
+const referenceData = readdirSync(migrationsDir)
+  .filter((f) => f.endsWith('.sql'))
+  .sort()
+  .map((f) => readFileSync(resolve(migrationsDir, f), 'utf8'))
+  .join('\n');
 const enums = sql('migrations/0002_enums.sql');
 
 function seededPermissionCodes(): string[] {
@@ -53,7 +59,7 @@ describe('permission catalogue', () => {
   const seeded = seededPermissionCodes();
 
   it('finds the seeded permissions in the migrations', () => {
-    expect(seeded.length).toBeGreaterThan(20);
+    expect(seeded.length).toBeGreaterThan(25);
   });
 
   it('declares every seeded permission in TypeScript', () => {
@@ -75,8 +81,10 @@ describe('roles', () => {
   });
 
   it('contains no sales role, in either place', () => {
+    // sqlCodeOnly, because a comment stating that no sales role exists must not
+    // itself trip the check. Assertions about behaviour read the code.
     expect(ROLES.some((r) => /sale/i.test(r))).toBe(false);
-    expect(/sales(person)?/i.test(referenceData)).toBe(false);
+    expect(/sales(person)?/i.test(sqlCodeOnly(referenceData))).toBe(false);
   });
 
   it('grants the candidate role no permissions', () => {

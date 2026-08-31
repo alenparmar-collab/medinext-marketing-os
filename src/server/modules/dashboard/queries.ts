@@ -1,6 +1,11 @@
 import 'server-only';
 import { createServerSupabase } from '@/lib/supabase/server';
 import type { MarketingStatus } from '@/config/statuses';
+import { listInterviews } from '@/server/modules/interviews/queries';
+import { listAssessments } from '@/server/modules/assessments/queries';
+import { countUnread } from '@/server/modules/notifications';
+import type { InterviewListItem } from '@/server/modules/interviews/types';
+import type { AssessmentListItem } from '@/server/modules/assessments/queries';
 
 /**
  * Overview counts.
@@ -19,6 +24,39 @@ export interface OverviewMetrics {
   applicationsLast30Days: number;
   interviews: number;
   openApplications: number;
+}
+
+/**
+ * "What needs my attention?"
+ *
+ * Deliberately three short lists rather than an analytics dashboard: the next
+ * interviews, the assessments still outstanding, and anything unread. All
+ * RLS-filtered, so a recruiter sees their own book and a manager the unit's.
+ */
+export interface AttentionQueue {
+  upcomingInterviews: InterviewListItem[];
+  openAssessments: AssessmentListItem[];
+  overdueAssessments: AssessmentListItem[];
+  unreadNotifications: number;
+}
+
+export async function getAttentionQueue(): Promise<AttentionQueue> {
+  const [interviews, assessments, unread] = await Promise.all([
+    listInterviews({ upcomingOnly: true, limit: 8 }),
+    listAssessments({ openOnly: true, limit: 20 }),
+    countUnread(),
+  ]);
+
+  const now = Date.now();
+  const overdue = assessments.filter((a) => a.deadline !== null && Date.parse(a.deadline) < now);
+  const open = assessments.filter((a) => !overdue.includes(a)).slice(0, 8);
+
+  return {
+    upcomingInterviews: interviews,
+    openAssessments: open,
+    overdueAssessments: overdue,
+    unreadNotifications: unread,
+  };
 }
 
 export async function getOverviewMetrics(userId: string): Promise<OverviewMetrics> {

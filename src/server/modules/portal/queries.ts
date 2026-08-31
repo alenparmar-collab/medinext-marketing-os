@@ -1,7 +1,14 @@
 import 'server-only';
 import { createServerSupabase } from '@/lib/supabase/server';
 import { AppError } from '@/server/auth/errors';
-import type { MarketingStatus, ApplicationStatus, ActivityType } from '@/config/statuses';
+import type {
+  MarketingStatus,
+  ApplicationStatus,
+  ActivityType,
+  InterviewStatus,
+  AssessmentStatus,
+} from '@/config/statuses';
+import { UPCOMING_INTERVIEW_STATUSES } from '@/config/statuses';
 
 /**
  * PORTAL DATA ACCESS — the only module a portal route may import.
@@ -234,8 +241,12 @@ export async function getMyCounts(candidateId: string): Promise<{
 }> {
   const supabase = await createServerSupabase();
 
-  const [apps, activities] = await Promise.all([
+  // Interviews and assessments are counted from their own tables now that they
+  // are first-class records; offers remain an activity type.
+  const [apps, interviews, assessments, activities] = await Promise.all([
     supabase.from('applications').select('id').eq('candidate_id', candidateId),
+    supabase.from('interviews').select('id').eq('candidate_id', candidateId),
+    supabase.from('assessments').select('id').eq('candidate_id', candidateId),
     supabase
       .from('marketing_activities')
       .select('activity_type')
@@ -244,12 +255,175 @@ export async function getMyCounts(candidateId: string): Promise<{
   ]);
 
   const rows = activities.data ?? [];
-  const countOf = (type: string) => rows.filter((r) => r.activity_type === type).length;
 
   return {
     applications: apps.data?.length ?? 0,
-    interviews: countOf('interview'),
-    assessments: countOf('assessment'),
-    offers: countOf('offer'),
+    interviews: interviews.data?.length ?? 0,
+    assessments: assessments.data?.length ?? 0,
+    offers: rows.filter((r) => r.activity_type === 'offer').length,
   };
+}
+
+/* ===========================================================================
+ * BUILD 4 — interviews, assessments and notifications for the portal
+ *
+ * Same rules as everything else in this module: scoped by the candidate id on
+ * the session, never from a URL, and projected narrowly.
+ *
+ * Note what is NOT selected: `notes` on interviews and assessments,
+ * interviewer email, source and verification metadata, and the whole schedule
+ * history. Internal commentary never enters a portal DTO.
+ * =========================================================================== */
+
+const PORTAL_INTERVIEW_COLUMNS =
+  'id, application_id, interview_round, scheduled_at, time_zone, meeting_url, status';
+
+export interface PortalInterview {
+  id: string;
+  companyName: string;
+  positionTitle: string;
+  interviewRound: number;
+  scheduledAt: string | null;
+  timeZone: string | null;
+  meetingUrl: string | null;
+  status: InterviewStatus;
+  isUpcoming: boolean;
+}
+
+export async function getMyInterviews(candidateId: string): Promise<PortalInterview[]> {
+  const supabase = await createServerSupabase();
+
+  const { data, error } = await supabase
+    .from('interviews')
+    .select(PORTAL_INTERVIEW_COLUMNS)
+    .eq('candidate_id', candidateId)
+    .order('scheduled_at', { ascending: false, nullsFirst: false });
+
+  if (error) throw error;
+
+  const rows = data ?? [];
+  if (rows.length === 0) return [];
+
+  const { data: apps } = await supabase
+    .from('applications')
+    .select('id, company_name, position_title')
+    .in('id', [...new Set(rows.map((r) => r.application_id))]);
+
+  const appById = new Map((apps ?? []).map((a) => [a.id, a] as const));
+  const now = Date.now();
+
+  return rows.map((r) => {
+    const app = appById.get(r.application_id);
+    const status = r.status as InterviewStatus;
+    return {
+      id: r.id,
+      companyName: app?.company_name ?? 'Your recruiter will confirm',
+      positionTitle: app?.position_title ?? '',
+      interviewRound: r.interview_round,
+      scheduledAt: r.scheduled_at,
+      timeZone: r.time_zone,
+      meetingUrl: r.meeting_url,
+      status,
+      isUpcoming:
+        (UPCOMING_INTERVIEW_STATUSES as readonly string[]).includes(status) &&
+        r.scheduled_at !== null &&
+        Date.parse(r.scheduled_at) >= now,
+    };
+  });
+}
+
+const PORTAL_ASSESSMENT_COLUMNS =
+  'id, application_id, assessment_type, assessment_url, received_at, deadline, completed_at, status, outcome';
+
+export interface PortalAssessment {
+  id: string;
+  companyName: string;
+  positionTitle: string;
+  assessmentType: string;
+  assessmentUrl: string | null;
+  receivedAt: string;
+  deadline: string | null;
+  completedAt: string | null;
+  status: AssessmentStatus;
+  outcome: string | null;
+  isOpen: boolean;
+  isOverdue: boolean;
+}
+
+export async function getMyAssessments(candidateId: string): Promise<PortalAssessment[]> {
+  const supabase = await createServerSupabase();
+
+  const { data, error } = await supabase
+    .from('assessments')
+    .select(PORTAL_ASSESSMENT_COLUMNS)
+    .eq('candidate_id', candidateId)
+    .order('received_at', { ascending: false });
+
+  if (error) throw error;
+
+  const rows = data ?? [];
+  if (rows.length === 0) return [];
+
+  const { data: apps } = await supabase
+    .from('applications')
+    .select('id, company_name, position_title')
+    .in('id', [...new Set(rows.map((r) => r.application_id))]);
+
+  const appById = new Map((apps ?? []).map((a) => [a.id, a] as const));
+  const now = Date.now();
+
+  return rows.map((r) => {
+    const app = appById.get(r.application_id);
+    const status = r.status as AssessmentStatus;
+    const isOpen = status === 'pending' || status === 'in_progress';
+    return {
+      id: r.id,
+      companyName: app?.company_name ?? 'Your recruiter will confirm',
+      positionTitle: app?.position_title ?? '',
+      assessmentType: r.assessment_type,
+      assessmentUrl: r.assessment_url,
+      receivedAt: r.received_at,
+      deadline: r.deadline,
+      completedAt: r.completed_at,
+      status,
+      outcome: r.outcome,
+      isOpen,
+      isOverdue: isOpen && r.deadline !== null && Date.parse(r.deadline) < now,
+    };
+  });
+}
+
+/**
+ * Document types a candidate may send us.
+ *
+ * Lives in the portal module rather than being imported from the internal
+ * reference module — portal routes may only reach this module, and that
+ * boundary is enforced by lint precisely so an internal query never gets
+ * reused here by habit.
+ */
+export interface PortalDocumentType {
+  code: string;
+  label: string;
+}
+
+const CANDIDATE_UPLOADABLE = [
+  'resume',
+  'cover_letter',
+  'certification',
+  'education_document',
+  'other',
+];
+
+export async function getUploadableDocumentTypes(): Promise<PortalDocumentType[]> {
+  const supabase = await createServerSupabase();
+
+  const { data, error } = await supabase
+    .from('document_types')
+    .select('code, label, is_active, sort_order')
+    .eq('is_active', true)
+    .in('code', CANDIDATE_UPLOADABLE)
+    .order('sort_order');
+
+  if (error) throw error;
+  return (data ?? []).map((t) => ({ code: t.code, label: t.label }));
 }

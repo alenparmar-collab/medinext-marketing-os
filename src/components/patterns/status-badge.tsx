@@ -4,10 +4,16 @@ import {
   APPLICATION_STATUS_META,
   ACTIVITY_TYPE_META,
   SOURCE_KIND_META,
+  INTERVIEW_STATUS_META,
+  ASSESSMENT_STATUS_META,
+  NOTIFICATION_TYPE_META,
   type MarketingStatus,
   type ApplicationStatus,
   type ActivityType,
   type SourceKind,
+  type InterviewStatus,
+  type AssessmentStatus,
+  type NotificationType,
 } from '@/config/statuses';
 
 /**
@@ -60,4 +66,19 @@ export function SourceBadge({
       {isVerified === false ? `${meta.label} · unverified` : meta.label}
     </Badge>
   );
+}
+
+export function InterviewStatusBadge({ status }: { status: InterviewStatus }) {
+  const meta = INTERVIEW_STATUS_META[status];
+  return <Badge tone={meta.tone}>{meta.label}</Badge>;
+}
+
+export function AssessmentStatusBadge({ status }: { status: AssessmentStatus }) {
+  const meta = ASSESSMENT_STATUS_META[status];
+  return <Badge tone={meta.tone}>{meta.label}</Badge>;
+}
+
+export function NotificationTypeBadge({ type }: { type: NotificationType }) {
+  const meta = NOTIFICATION_TYPE_META[type];
+  return <Badge tone={meta.tone}>{meta.label}</Badge>;
 }

@@ -1,7 +1,9 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
 import { requireInternal } from '@/server/auth/actor';
-import { getOverviewMetrics } from '@/server/modules/dashboard/queries';
+import { getOverviewMetrics, getAttentionQueue } from '@/server/modules/dashboard/queries';
+import { InterviewStatusBadge, AssessmentStatusBadge } from '@/components/patterns/status-badge';
+import { formatScheduledTime, formatRelative, formatDateTime } from '@/lib/utils/format';
 import { PageHeader } from '@/components/patterns/page-header';
 import { Card, CardBody, CardHeader, CardTitle } from '@/components/ui/card';
 import { MarketingStatusBadge } from '@/components/patterns/status-badge';
@@ -16,7 +18,15 @@ export const metadata: Metadata = { title: 'Overview' };
  */
 export default async function OverviewPage() {
   const actor = await requireInternal();
-  const metrics = await getOverviewMetrics(actor.userId);
+  const [metrics, attention] = await Promise.all([
+    getOverviewMetrics(actor.userId),
+    getAttentionQueue(),
+  ]);
+
+  const nothingPending =
+    attention.upcomingInterviews.length === 0 &&
+    attention.openAssessments.length === 0 &&
+    attention.overdueAssessments.length === 0;
 
   // Every figure is counted from records. Nothing here is a stored total, and
   // nobody types these numbers in.
@@ -56,6 +66,113 @@ export default async function OverviewPage() {
           </Card>
         ))}
       </div>
+
+      {/*
+        "What needs my attention?" comes before the summary counts, because it
+        is the question a recruiter opens this page to answer. Deliberately not
+        an analytics dashboard.
+      */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Needs your attention</CardTitle>
+          {attention.unreadNotifications > 0 ? (
+            <Link
+              href="/notifications"
+              className="text-[13px] text-[var(--color-accent-600)] hover:underline"
+            >
+              {attention.unreadNotifications} unread
+            </Link>
+          ) : null}
+        </CardHeader>
+        <CardBody>
+          {nothingPending ? (
+            <EmptyState
+              title="Nothing scheduled or outstanding"
+              body="Upcoming interviews and open assessments for your candidates will appear here."
+            />
+          ) : (
+            <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
+              <section>
+                <h3 className="mb-2 text-[11px] font-medium uppercase tracking-[0.08em] text-[var(--text-muted)]">
+                  Upcoming interviews
+                </h3>
+                {attention.upcomingInterviews.length === 0 ? (
+                  <p className="text-[13px] text-[var(--text-muted)]">Nothing scheduled.</p>
+                ) : (
+                  <ul className="flex flex-col gap-2.5">
+                    {attention.upcomingInterviews.map((i) => (
+                      <li key={i.id} className="flex flex-col gap-0.5">
+                        <span className="text-[13.5px] text-[var(--text-primary)]">
+                          <Link
+                            href={`/candidates/${i.candidateId}`}
+                            className="font-medium hover:text-[var(--color-accent-600)] hover:underline"
+                          >
+                            {i.candidateName}
+                          </Link>{' '}
+                          · {i.companyName}
+                        </span>
+                        <span className="tabular text-[12.5px] text-[var(--text-secondary)]">
+                          {formatScheduledTime(i.scheduledAt, i.timeZone)}
+                        </span>
+                        <span className="flex items-center gap-2">
+                          <InterviewStatusBadge status={i.status} />
+                          <span className="text-[12px] text-[var(--text-muted)]">
+                            {formatRelative(i.scheduledAt)}
+                          </span>
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </section>
+
+              <section>
+                <h3 className="mb-2 text-[11px] font-medium uppercase tracking-[0.08em] text-[var(--text-muted)]">
+                  Assessments outstanding
+                </h3>
+                {attention.overdueAssessments.length === 0 &&
+                attention.openAssessments.length === 0 ? (
+                  <p className="text-[13px] text-[var(--text-muted)]">Nothing outstanding.</p>
+                ) : (
+                  <ul className="flex flex-col gap-2.5">
+                    {[...attention.overdueAssessments, ...attention.openAssessments].map((a) => {
+                      const overdue = attention.overdueAssessments.includes(a);
+                      return (
+                        <li key={a.id} className="flex flex-col gap-0.5">
+                          <span className="text-[13.5px] text-[var(--text-primary)]">
+                            <Link
+                              href={`/candidates/${a.candidateId}`}
+                              className="font-medium hover:text-[var(--color-accent-600)] hover:underline"
+                            >
+                              {a.candidateName}
+                            </Link>{' '}
+                            · {a.assessmentType}
+                          </span>
+                          <span className="tabular text-[12.5px] text-[var(--text-secondary)]">
+                            {a.deadline ? formatDateTime(a.deadline) : 'No deadline given'}
+                          </span>
+                          <span className="flex items-center gap-2">
+                            <AssessmentStatusBadge status={a.status} />
+                            {overdue ? (
+                              <span className="text-[12px] font-medium text-[var(--color-critical)]">
+                                Overdue
+                              </span>
+                            ) : a.deadline ? (
+                              <span className="text-[12px] text-[var(--text-muted)]">
+                                Due {formatRelative(a.deadline)}
+                              </span>
+                            ) : null}
+                          </span>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </section>
+            </div>
+          )}
+        </CardBody>
+      </Card>
 
       <Card>
         <CardHeader>

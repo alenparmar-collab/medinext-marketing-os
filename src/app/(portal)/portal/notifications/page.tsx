@@ -1,17 +1,37 @@
 import type { Metadata } from 'next';
 import { requireCandidate } from '@/server/auth/actor';
-import { ComingSoon } from '@/components/patterns/coming-soon';
+import { listNotifications } from '@/server/modules/notifications';
+import { PageHeader } from '@/components/patterns/page-header';
+import { EmptyState } from '@/components/patterns/states';
+import { NotificationList } from '@/components/patterns/notification-list';
+import {
+  markNotificationReadAction,
+  markAllNotificationsReadAction,
+} from '@/app/notifications-actions';
 
 export const metadata: Metadata = { title: 'Notifications' };
 
-export default async function Page() {
+export default async function PortalNotificationsPage() {
   await requireCandidate();
+  const notifications = await listNotifications(100);
+
   return (
-    <ComingSoon
-      title="Notifications"
-      description="Updates about your job search."
-      plannedIn="Build 4"
-      willInclude={['Interview scheduled, rescheduled or cancelled', 'Assessment assigned', 'A document shared with you']}
-    />
+    <div className="flex max-w-3xl flex-col gap-5">
+      <PageHeader title="Notifications" description="Updates about your job search." />
+
+      {notifications.length === 0 ? (
+        <EmptyState
+          title="Nothing yet"
+          body="You will hear from us here when an interview is arranged or moved, an assessment arrives, or one of your applications changes."
+        />
+      ) : (
+        <NotificationList
+          notifications={notifications}
+          audience="portal"
+          onMarkRead={markNotificationReadAction}
+          onMarkAllRead={markAllNotificationsReadAction}
+        />
+      )}
+    </div>
   );
 }

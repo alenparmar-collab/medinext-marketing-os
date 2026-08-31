@@ -43,11 +43,24 @@ export default async function CandidateDocumentsPage({
                   {formatDate(d.uploadedAt)}
                 </p>
               </div>
-              {d.visibility === 'candidate_visible' ? (
-                <Badge tone="positive">Shared with candidate</Badge>
-              ) : (
-                <Badge tone="muted">Internal</Badge>
-              )}
+              <div className="flex shrink-0 items-center gap-3">
+                {d.visibility === 'candidate_visible' ? (
+                  <Badge tone="positive">Shared with candidate</Badge>
+                ) : (
+                  <Badge tone="muted">Internal</Badge>
+                )}
+                {/*
+                  Verifies, mints a 60-second signed URL and redirects. The
+                  bytes never pass through the application, and the download is
+                  recorded in the audit log.
+                */}
+                <a
+                  href={`/api/documents/${d.id}/download`}
+                  className="text-[13.5px] text-[var(--color-accent-600)] hover:underline"
+                >
+                  Download
+                </a>
+              </div>
             </li>
           ))}
         </ul>
