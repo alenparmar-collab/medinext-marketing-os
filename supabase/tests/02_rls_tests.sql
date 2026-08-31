@@ -46,6 +46,12 @@ truncate test.results;
 \set DOC_PRIYA_INT  00000000-0000-4000-8d00-000000000002
 \set DOC_LUCIA      00000000-0000-4000-8d00-000000000003
 
+-- Build 5: reports, review queue, administration
+\set RPT_SALAS_CONF 00000000-0000-4000-9500-000000000001
+\set RPT_SALAS_DRAFT 00000000-0000-4000-9500-000000000003
+\set RPT_HALV       00000000-0000-4000-9500-000000000004
+\set RPT_ROSSI      00000000-0000-4000-9500-000000000005
+
 -- ---------------------------------------------------------------------------
 -- SECTION 1 — Unauthenticated access
 -- ---------------------------------------------------------------------------
@@ -109,11 +115,22 @@ select test.check('scope', 'manager cannot see the other unit''s candidate',
   test.count_as(:'MANAGER',
     'select count(*) from public.candidates where id = ' || quote_literal(:'HIROSHI')), 0::bigint);
 
-select test.check('scope', 'recruiter Salas sees only their 2 assigned candidates',
-  test.count_as(:'SALAS', 'select count(*) from public.candidates'), 2::bigint);
+-- Compared against the RULE rather than a fixed number: a hardcoded count goes
+-- stale whenever the seed grows, and this is the stronger claim anyway — the
+-- policy returns exactly the rows an active assignment allows, no more.
+select test.check('scope', 'recruiter Salas sees exactly their actively-assigned candidates',
+  test.count_as(:'SALAS', 'select count(*) from public.candidates'),
+  (select count(distinct ca.candidate_id) from public.candidate_assignments ca
+    join public.candidates c on c.id = ca.candidate_id
+   where ca.user_id = '00000000-0000-4000-8000-000000000003'
+     and ca.ends_on is null and c.archived_at is null));
 
-select test.check('scope', 'recruiter Halvorsen sees only their 2 assigned candidates',
-  test.count_as(:'HALVORSEN', 'select count(*) from public.candidates'), 2::bigint);
+select test.check('scope', 'recruiter Halvorsen sees exactly their actively-assigned candidates',
+  test.count_as(:'HALVORSEN', 'select count(*) from public.candidates'),
+  (select count(distinct ca.candidate_id) from public.candidate_assignments ca
+    join public.candidates c on c.id = ca.candidate_id
+   where ca.user_id = '00000000-0000-4000-8000-000000000004'
+     and ca.ends_on is null and c.archived_at is null));
 
 select test.check('scope', 'recruiter cannot see a candidate assigned to a colleague',
   test.count_as(:'SALAS',
@@ -326,16 +343,27 @@ end $$;
 -- SECTION 11 — Internal scope over applications
 -- ---------------------------------------------------------------------------
 select test.check('applications', 'admin sees every application in both units',
-  test.count_as(:'ADMIN', 'select count(*) from public.applications'), 12::bigint);
+  test.count_as(:'ADMIN', 'select count(*) from public.applications'),
+  (select count(*) from public.applications));
 
-select test.check('applications', 'manager sees their unit''s 11 applications only',
-  test.count_as(:'MANAGER', 'select count(*) from public.applications'), 11::bigint);
+select test.check('applications', 'manager sees exactly their own unit''s applications',
+  test.count_as(:'MANAGER', 'select count(*) from public.applications'),
+  (select count(*) from public.applications
+    where business_unit_id = '00000000-0000-4000-9000-000000000001'));
 
-select test.check('applications', 'recruiter Salas sees only their candidates'' 6 applications',
-  test.count_as(:'SALAS', 'select count(*) from public.applications'), 6::bigint);
+select test.check('applications', 'recruiter Salas sees exactly their assigned candidates'' applications',
+  test.count_as(:'SALAS', 'select count(*) from public.applications'),
+  (select count(*) from public.applications a
+   where a.candidate_id in (
+     select ca.candidate_id from public.candidate_assignments ca
+     where ca.user_id = '00000000-0000-4000-8000-000000000003' and ca.ends_on is null)));
 
-select test.check('applications', 'recruiter Halvorsen sees only their candidates'' 4 applications',
-  test.count_as(:'HALVORSEN', 'select count(*) from public.applications'), 4::bigint);
+select test.check('applications', 'recruiter Halvorsen sees exactly their assigned candidates'' applications',
+  test.count_as(:'HALVORSEN', 'select count(*) from public.applications'),
+  (select count(*) from public.applications a
+   where a.candidate_id in (
+     select ca.candidate_id from public.candidate_assignments ca
+     where ca.user_id = '00000000-0000-4000-8000-000000000004' and ca.ends_on is null)));
 
 select test.check('applications', 'recruiter cannot see an application on an unassigned candidate',
   test.count_as(:'SALAS',
@@ -359,8 +387,10 @@ select test.check('applications', 'cross-unit: APAC recruiter sees only their ow
 -- ---------------------------------------------------------------------------
 -- SECTION 12 — CANDIDATE ISOLATION over applications  ***critical***
 -- ---------------------------------------------------------------------------
-select test.check('isolation', 'candidate Priya sees her own 4 applications',
-  test.count_as(:'PRIYA_USER', 'select count(*) from public.applications'), 4::bigint);
+select test.check('isolation', 'candidate Priya sees exactly her own applications and no others',
+  test.count_as(:'PRIYA_USER', 'select count(*) from public.applications'),
+  (select count(*) from public.applications
+    where candidate_id = '00000000-0000-4000-a000-000000000001'));
 
 select test.check('isolation', 'CANDIDATE A CANNOT READ APPLICATIONS OF CANDIDATE B',
   test.count_as(:'PRIYA_USER',
@@ -376,7 +406,9 @@ select test.check('isolation', 'candidate cannot read a named application belong
 
 select test.check('isolation', 'candidate cannot enumerate applications by company name',
   test.count_as(:'PRIYA_USER',
-    'select count(*) from public.applications where company_name is not null'), 4::bigint);
+    'select count(*) from public.applications where company_name is not null'),
+  (select count(*) from public.applications
+    where candidate_id = '00000000-0000-4000-a000-000000000001'));
 
 select test.check('isolation', 'candidate cannot read application status history',
   test.count_as(:'PRIYA_USER', 'select count(*) from public.application_status_history'), 0::bigint);
@@ -545,7 +577,8 @@ select test.check('automation', 'activity inserts are captured in the audit log'
 select test.check('aggregation', 'counts are derived from records, not stored totals',
   test.count_as(:'SALAS',
     'select applications from public.candidate_counts(array[' || quote_literal(:'PRIYA') || ']::uuid[])'),
-  5::bigint);
+  (select count(*) from public.applications
+    where candidate_id = '00000000-0000-4000-a000-000000000001'));
 
 select test.check('aggregation', 'a recruiter gets zero counts for a candidate they cannot access',
   test.count_as(:'SALAS',
@@ -988,6 +1021,389 @@ select test.check('documents', 'candidate cannot delete a document',
   test.write_denied(:'PRIYA_USER',
     'delete from public.documents where candidate_id = ' || quote_literal(:'PRIYA')), true);
 
+-- ===========================================================================
+-- BUILD 5 — Daily reports, review queue, administration
+-- ===========================================================================
+
+-- ---------------------------------------------------------------------------
+-- SECTION 26 — Daily report figures are DERIVED, never stored input
+-- ---------------------------------------------------------------------------
+select test.check('reports', 'the derived count matches the actual application rows',
+  (select applications from public.daily_report_metrics(
+     '00000000-0000-4000-8000-000000000003', current_date - 3)),
+  (select count(*) from public.applications
+    where created_by = '00000000-0000-4000-8000-000000000003'
+      and application_date = current_date - 3));
+
+select test.check('reports', 'the derived response count matches the actual activity rows',
+  (select recruiter_responses from public.daily_report_metrics(
+     '00000000-0000-4000-8000-000000000003', current_date - 3)),
+  (select count(*) from public.marketing_activities
+    where created_by = '00000000-0000-4000-8000-000000000003'
+      and activity_type = 'recruiter_response'
+      and (activity_date at time zone 'UTC')::date = current_date - 3));
+
+select test.check('reports', 'a draft carries no snapshot at all',
+  (select count(*) from public.daily_reports
+    where status = 'draft' and snapshot_taken_at is not null), 0::bigint);
+
+select test.check('reports', 'every confirmed report records who confirmed it and when',
+  (select count(*) from public.daily_reports
+    where status = 'confirmed' and (confirmed_by is null or confirmed_at is null)), 0::bigint);
+
+-- Confirmation must be a reconciliation, not an edit: it may not touch a source
+-- record.
+do $$
+declare v_before bigint; v_after bigint; v_report uuid;
+begin
+  select count(*) into v_before from public.applications;
+
+  -- Re-runnable: the mutation harness executes this file a second time against
+  -- an already-seeded database, and a unique violation here would abort the
+  -- block and silently drop the assertions below it.
+  delete from public.daily_reports
+   where recruiter_id = '00000000-0000-4000-8000-000000000004'
+     and report_date = current_date - 5;
+
+  insert into public.daily_reports (business_unit_id, recruiter_id, report_date, status)
+  values ('00000000-0000-4000-9000-000000000001',
+          '00000000-0000-4000-8000-000000000004', current_date - 5, 'draft')
+  returning id into v_report;
+
+  perform set_config('app.actor_id', '00000000-0000-4000-8000-000000000004', true);
+  perform public.confirm_daily_report(v_report, 'Confirmed by the test.');
+  perform set_config('app.actor_id', '', true);
+
+  select count(*) into v_after from public.applications;
+
+  insert into test.results (section, name, passed, detail)
+  values ('reports', 'CONFIRMING A REPORT DOES NOT ALTER SOURCE RECORDS',
+          v_before = v_after, format('applications before %s, after %s', v_before, v_after));
+end $$;
+
+-- Checked AFTER a report has been confirmed inside this run, so the assertion
+-- covers the confirmation path as it currently behaves rather than only the
+-- rows the seed left behind.
+select test.check('reports', 'A CONFIRMED SNAPSHOT EQUALS THE DERIVED FIGURES',
+  (select count(*) from public.daily_reports r
+    cross join lateral public.daily_report_metrics(r.recruiter_id, r.report_date) m
+   where r.status = 'confirmed'
+     and (r.snapshot_applications        is distinct from m.applications
+       or r.snapshot_recruiter_responses is distinct from m.recruiter_responses
+       or r.snapshot_interviews          is distinct from m.interviews
+       or r.snapshot_assessments         is distinct from m.assessments
+       or r.snapshot_rejections          is distinct from m.rejections)),
+  0::bigint);
+
+-- Re-confirming must be refused rather than taking a second snapshot.
+do $$
+declare v_refused boolean := false;
+begin
+  begin
+    perform public.confirm_daily_report('00000000-0000-4000-9500-000000000001');
+  exception when others then
+    v_refused := true;
+  end;
+  insert into test.results (section, name, passed, detail)
+  values ('reports', 'a confirmed report cannot be confirmed twice', v_refused,
+          case when v_refused then 'ok' else 'the second confirmation was accepted' end);
+end $$;
+
+-- ---------------------------------------------------------------------------
+-- SECTION 27 — Report visibility
+-- ---------------------------------------------------------------------------
+select test.check('reports', 'recruiter Salas sees only their own reports',
+  test.count_as(:'SALAS', 'select count(*) from public.daily_reports'), 3::bigint);
+
+select test.check('reports', 'RECRUITER CANNOT READ THE REPORT OF ANOTHER RECRUITER',
+  test.count_as(:'SALAS',
+    'select count(*) from public.daily_reports where id = ' || quote_literal(:'RPT_HALV')), 0::bigint);
+
+select test.check('reports', 'manager sees the whole unit''s reports',
+  (test.count_as(:'MANAGER', 'select count(*) from public.daily_reports') >= 5), true);
+
+select test.check('reports', 'cross-unit: EU manager cannot see the APAC report',
+  test.count_as(:'MANAGER',
+    'select count(*) from public.daily_reports where id = ' || quote_literal(:'RPT_ROSSI')), 0::bigint);
+
+select test.check('reports', 'CANDIDATE CANNOT ACCESS DAILY REPORTS',
+  test.count_as(:'PRIYA_USER', 'select count(*) from public.daily_reports'), 0::bigint);
+
+select test.check('reports', 'candidate cannot read a named internal report',
+  test.count_as(:'PRIYA_USER',
+    'select count(*) from public.daily_reports where id = ' || quote_literal(:'RPT_SALAS_CONF')), 0::bigint);
+
+select test.check('reports', 'CANDIDATE CANNOT CREATE A DAILY REPORT',
+  test.write_denied(:'PRIYA_USER',
+    'insert into public.daily_reports (business_unit_id, recruiter_id, report_date) values ('
+    || quote_literal(:'EU_UNIT') || ', ' || quote_literal(:'PRIYA_USER') || ', current_date)'), true);
+
+select test.check('reports', 'recruiter cannot file a report in someone else''s name',
+  test.write_denied(:'SALAS',
+    'insert into public.daily_reports (business_unit_id, recruiter_id, report_date) values ('
+    || quote_literal(:'EU_UNIT') || ', ' || quote_literal(:'HALVORSEN') || ', current_date - 9)'), true);
+
+select test.check('reports', 'recruiter CAN file their own report',
+  test.write_allowed(:'SALAS',
+    'insert into public.daily_reports (business_unit_id, recruiter_id, report_date, notes) values ('
+    || quote_literal(:'EU_UNIT') || ', ' || quote_literal(:'SALAS')
+    || ', current_date - 8, ''Filed by the test.'')'), true);
+
+select test.check('reports', 'A CONFIRMED REPORT CANNOT BE EDITED',
+  test.write_denied(:'SALAS',
+    'update public.daily_reports set notes = ''rewritten'' where id = ' || quote_literal(:'RPT_SALAS_CONF')),
+  true);
+
+select test.check('reports', 'a draft CAN still be edited by its author',
+  test.write_allowed(:'SALAS',
+    'update public.daily_reports set notes = ''updated'' where id = ' || quote_literal(:'RPT_SALAS_DRAFT')),
+  true);
+
+select test.check('reports', 'nobody can delete a daily report',
+  test.write_denied(:'MANAGER', 'delete from public.daily_reports'), true);
+
+-- ---------------------------------------------------------------------------
+-- SECTION 28 — Review queue
+-- ---------------------------------------------------------------------------
+select test.check('review', 'the checks generated items from real records',
+  (select count(*) > 0 from public.review_items), true);
+
+do $$
+declare v_before bigint; v_after bigint;
+begin
+  -- Two runs back to back, so nothing else in the suite can create a record
+  -- between them. Earlier assertions add applications, and a genuinely new
+  -- finding SHOULD produce a new item — that is not a duplicate.
+  perform public.run_review_checks('00000000-0000-4000-9000-000000000001');
+  select count(*) into v_before from public.review_items;
+
+  perform public.run_review_checks('00000000-0000-4000-9000-000000000001');
+  select count(*) into v_after from public.review_items;
+
+  insert into test.results (section, name, passed, detail)
+  values ('review', 'RE-RUNNING THE CHECKS CREATES NO DUPLICATES',
+          v_before = v_after, format('before %s, after %s', v_before, v_after));
+end $$;
+
+select test.check('review', 'items use neutral language, never accusation',
+  (select count(*) from public.review_items
+    where reason ~* '(fraud|false|misconduct|wrongdoing|lying|dishonest|cheat)'), 0::bigint);
+
+select test.check('review', 'REVIEW QUEUE IS INTERNAL ONLY — candidate sees nothing',
+  test.count_as(:'PRIYA_USER', 'select count(*) from public.review_items'), 0::bigint);
+
+select test.check('review', 'candidate B also sees nothing in the review queue',
+  test.count_as(:'LUCIA_USER', 'select count(*) from public.review_items'), 0::bigint);
+
+select test.check('review', 'CANDIDATE CANNOT CREATE A REVIEW ITEM',
+  test.write_denied(:'PRIYA_USER',
+    'insert into public.review_items (business_unit_id, item_type, reason, dedupe_key) values ('
+    || quote_literal(:'EU_UNIT') || ', ''missing_information'', ''Injected'', ''injected:1'')'), true);
+
+select test.check('review', 'internal staff can read the queue',
+  (test.count_as(:'MANAGER', 'select count(*) from public.review_items') > 0), true);
+
+select test.check('review', 'recruiter can read the queue but not resolve items',
+  test.write_denied(:'SALAS',
+    'update public.review_items set status = ''dismissed'', resolution = ''no_action_needed'', '
+    || 'resolved_by = ' || quote_literal(:'SALAS') || ', resolved_at = now()'), true);
+
+select test.check('review', 'manager CAN resolve a review item',
+  test.write_allowed(:'MANAGER',
+    'update public.review_items set status = ''resolved'', resolution = ''confirmed_correct'', '
+    || 'resolution_notes = ''Checked.'', resolved_by = ' || quote_literal(:'MANAGER')
+    || ', resolved_at = now() where status = ''open'''), true);
+
+select test.check('review', 'REVIEW HISTORY CANNOT BE DELETED',
+  test.write_denied(:'MANAGER', 'delete from public.review_items'), true);
+
+select test.check('review', 'an admin cannot delete review history either',
+  test.write_denied(:'ADMIN', 'delete from public.review_items'), true);
+
+select test.check('review', 'a resolved item must record who resolved it',
+  (select count(*) from public.review_items
+    where status in ('resolved','dismissed')
+      and (resolved_by is null or resolved_at is null or resolution is null)), 0::bigint);
+
+select test.check('review', 'cross-unit: EU manager cannot see APAC review items',
+  test.count_as(:'MANAGER',
+    'select count(*) from public.review_items where business_unit_id <> ' || quote_literal(:'EU_UNIT')),
+  0::bigint);
+
+-- ---------------------------------------------------------------------------
+-- SECTION 29 — Administration and role escalation
+-- ---------------------------------------------------------------------------
+select test.check('admin', 'RECRUITER CANNOT ADMINISTER USERS',
+  test.write_denied(:'SALAS',
+    'update public.users set status = ''disabled'' where id = ' || quote_literal(:'HALVORSEN')), true);
+
+select test.check('admin', 'MANAGER CANNOT ADMINISTER USERS',
+  test.write_denied(:'MANAGER',
+    'update public.users set status = ''disabled'' where id = ' || quote_literal(:'SALAS')), true);
+
+select test.check('admin', 'admin CAN deactivate a user',
+  test.write_allowed(:'ADMIN',
+    'update public.users set status = ''suspended'' where id = ' || quote_literal(:'ROSSI')), true);
+
+select test.check('admin', 'admin CAN reactivate a user',
+  test.write_allowed(:'ADMIN',
+    'update public.users set status = ''active'' where id = ' || quote_literal(:'ROSSI')), true);
+
+select test.check('admin', 'RECRUITER CANNOT CHANGE ROLES',
+  test.write_denied(:'SALAS',
+    'insert into public.user_roles (user_id, role_code) values (' || quote_literal(:'SALAS') || ', ''manager'')'),
+  true);
+
+select test.check('admin', 'MANAGER CANNOT GRANT ANY ROLE',
+  test.write_denied(:'MANAGER',
+    'insert into public.user_roles (user_id, role_code) values (' || quote_literal(:'HALVORSEN') || ', ''manager'')'),
+  true);
+
+select test.check('admin', 'MANAGER CANNOT CREATE AN ADMIN',
+  test.write_denied(:'MANAGER',
+    'insert into public.user_roles (user_id, role_code) values (' || quote_literal(:'MANAGER') || ', ''admin'')'),
+  true);
+
+select test.check('admin', 'a recruiter cannot change their own account status',
+  test.write_denied(:'SALAS',
+    'update public.users set status = ''suspended'' where id = ' || quote_literal(:'SALAS')), true);
+
+-- Hardening from migration 0027: a user editing their own row may not touch
+-- the columns that govern access.
+do $$
+declare v_blocked boolean := false;
+begin
+  perform set_config('request.jwt.claims',
+    json_build_object('sub','00000000-0000-4000-8000-000000000003','role','authenticated')::text, true);
+  execute 'set local role authenticated';
+  begin
+    -- Must be a genuine change: setting a column to the value it already holds
+    -- is not a change, and the guard is right not to fire on one.
+    update public.users set status = 'suspended'
+     where id = '00000000-0000-4000-8000-000000000003';
+  exception when others then
+    v_blocked := true;
+  end;
+  execute 'reset role';
+
+  insert into test.results (section, name, passed, detail)
+  values ('admin', 'A USER CANNOT CHANGE THEIR OWN ACCOUNT STATUS', v_blocked,
+          case when v_blocked then 'ok' else 'the self-update was accepted' end);
+end $$;
+
+do $$
+declare v_blocked boolean := false;
+begin
+  perform set_config('request.jwt.claims',
+    json_build_object('sub','00000000-0000-4000-8000-000000000003','role','authenticated')::text, true);
+  execute 'set local role authenticated';
+  begin
+    update public.users set business_unit_id = '00000000-0000-4000-9000-000000000002'
+     where id = '00000000-0000-4000-8000-000000000003';
+  exception when others then
+    v_blocked := true;
+  end;
+  execute 'reset role';
+
+  insert into test.results (section, name, passed, detail)
+  values ('admin', 'A USER CANNOT MOVE THEMSELVES TO ANOTHER BUSINESS UNIT', v_blocked,
+          case when v_blocked then 'ok' else 'the self-update was accepted' end);
+end $$;
+
+select test.check('admin', 'CANDIDATE CANNOT MAKE THEMSELVES AN INTERNAL USER',
+  test.write_denied(:'PRIYA_USER',
+    'insert into public.user_roles (user_id, role_code) values (' || quote_literal(:'PRIYA_USER') || ', ''recruiter'')'),
+  true);
+
+select test.check('admin', 'candidate cannot grant themselves admin',
+  test.write_denied(:'PRIYA_USER',
+    'insert into public.user_roles (user_id, role_code) values (' || quote_literal(:'PRIYA_USER') || ', ''admin'')'),
+  true);
+
+select test.check('admin', 'candidate cannot enumerate staff accounts',
+  test.count_as(:'PRIYA_USER', 'select count(*) from public.users'), 1::bigint);
+
+-- ---------------------------------------------------------------------------
+-- SECTION 30 — Candidate assignments
+-- ---------------------------------------------------------------------------
+select test.check('assignments', 'the seeded reassignment kept the previous assignment row',
+  (select count(*) from public.candidate_assignments
+    where candidate_id = '00000000-0000-4000-a000-000000000004'), 2::bigint);
+
+select test.check('assignments', 'ASSIGNMENT HISTORY RECORDS WHO ENDED IT AND WHEN',
+  (select count(*) > 0 from public.candidate_assignments
+    where candidate_id = '00000000-0000-4000-a000-000000000004'
+      and ends_on is not null and ended_by is not null), true);
+
+select test.check('assignments', 'exactly one assignment is active after reassignment',
+  (select count(*) from public.candidate_assignments
+    where candidate_id = '00000000-0000-4000-a000-000000000004' and ends_on is null), 1::bigint);
+
+select test.check('assignments', 'RECRUITER CANNOT ASSIGN THEMSELVES A CANDIDATE',
+  test.write_denied(:'SALAS',
+    'insert into public.candidate_assignments (business_unit_id, candidate_id, user_id) values ('
+    || quote_literal(:'EU_UNIT') || ', ' || quote_literal(:'NAOMI') || ', ' || quote_literal(:'SALAS') || ')'),
+  true);
+
+select test.check('assignments', 'manager CAN assign a recruiter',
+  test.write_allowed(:'MANAGER',
+    'insert into public.candidate_assignments (business_unit_id, candidate_id, user_id, assignment_type) values ('
+    || quote_literal(:'EU_UNIT') || ', ' || quote_literal(:'NAOMI') || ', '
+    || quote_literal(:'HALVORSEN') || ', ''primary_recruiter'')'), true);
+
+select test.check('assignments', 'candidate cannot assign anybody',
+  test.write_denied(:'PRIYA_USER',
+    'insert into public.candidate_assignments (business_unit_id, candidate_id, user_id) values ('
+    || quote_literal(:'EU_UNIT') || ', ' || quote_literal(:'PRIYA') || ', ' || quote_literal(:'PRIYA_USER') || ')'),
+  true);
+
+-- Hardening from 0027: a portal account is not an assignable recruiter.
+do $$
+declare v_blocked boolean := false;
+begin
+  begin
+    insert into public.candidate_assignments (business_unit_id, candidate_id, user_id)
+    values ('00000000-0000-4000-9000-000000000001',
+            '00000000-0000-4000-a000-000000000005',
+            '00000000-0000-4000-8000-000000000011');   -- Priya's portal account
+  exception when others then
+    v_blocked := true;
+  end;
+  insert into test.results (section, name, passed, detail)
+  values ('assignments', 'A CANDIDATE ACCOUNT CANNOT BE ASSIGNED AS A RECRUITER', v_blocked,
+          case when v_blocked then 'ok' else 'the assignment was accepted' end);
+end $$;
+
+select test.check('assignments', 'assignment changes are captured in the audit log',
+  (select count(*) > 0 from audit.audit_logs
+    where entity_type = 'candidate_assignments' and action in ('insert','update')), true);
+
+-- ---------------------------------------------------------------------------
+-- SECTION 31 — Audit coverage for the new surfaces
+-- ---------------------------------------------------------------------------
+select test.check('audit', 'daily report confirmation is captured in the audit log',
+  (select count(*) > 0 from audit.audit_logs
+    where entity_type = 'daily_reports' and action = 'update'), true);
+
+select test.check('audit', 'review item creation is captured in the audit log',
+  (select count(*) > 0 from audit.audit_logs
+    where entity_type = 'review_items' and action = 'insert'), true);
+
+select test.check('audit', 'review item resolution is captured in the audit log',
+  (select count(*) > 0 from audit.audit_logs
+    where entity_type = 'review_items' and action = 'update'), true);
+
+select test.check('audit', 'user status changes are captured in the audit log',
+  (select count(*) > 0 from audit.audit_logs
+    where entity_type = 'users' and action = 'update'
+      and 'status' = any(changed_fields)), true);
+
+select test.check('audit', 'CANDIDATE STILL CANNOT READ THE AUDIT LOG',
+  test.count_as(:'PRIYA_USER', 'select count(*) from audit.audit_logs'), -1::bigint);
+
+select test.check('audit', 'a recruiter cannot read the audit log either',
+  test.count_as(:'SALAS', 'select count(*) from audit.audit_logs'), -1::bigint);
+
 -- ---------------------------------------------------------------------------
 -- SECTION 9 — Assignment lifecycle drives access
 -- ---------------------------------------------------------------------------
@@ -1056,7 +1472,8 @@ select test.check('structure', 'every business table carries business_unit_id',
      ('candidates'),('candidate_assignments'),('marketing_periods'),
      ('documents'),('candidate_internal_notes'),
      ('applications'),('marketing_activities'),
-     ('interviews'),('assessments'),('notifications')) as t(tbl)
+     ('interviews'),('assessments'),('notifications'),
+     ('daily_reports'),('review_items')) as t(tbl)
    where not exists (
      select 1 from information_schema.columns
       where table_schema='public' and table_name=t.tbl and column_name='business_unit_id'
@@ -1068,7 +1485,7 @@ select test.check('structure', 'every audited business table has the audit trigg
      ('documents'),('users'),('user_roles'),('candidate_internal_notes'),
      ('applications'),('marketing_activities'),('application_status_history'),
      ('interviews'),('assessments'),('notifications'),
-     ('interview_schedule_history')) as t(tbl)
+     ('interview_schedule_history'),('daily_reports'),('review_items')) as t(tbl)
    where not exists (
      select 1 from pg_trigger tg
        join pg_class c on c.oid = tg.tgrelid

@@ -108,6 +108,38 @@ probe "notification idempotency" \
   "@supabase/tests/mutations/notification_idempotency.sql" \
   "DUPLICATE NOTIFICATIONS ARE PREVENTED FOR A REPEATED EVENT"
 
+probe "daily reports staying private between recruiters" \
+  "@supabase/tests/mutations/report_isolation.sql" \
+  "RECRUITER CANNOT READ THE REPORT OF ANOTHER RECRUITER"
+
+probe "report figures being derived rather than typed" \
+  "@supabase/tests/mutations/report_snapshot.sql" \
+  "A CONFIRMED SNAPSHOT EQUALS THE DERIVED FIGURES"
+
+probe "the review queue staying internal only" \
+  "drop policy review_items_select on public.review_items;
+   create policy review_items_select on public.review_items
+     for select to authenticated using (true);" \
+  "REVIEW QUEUE IS INTERNAL ONLY — candidate sees nothing"
+
+# Both the missing GRANT and the missing policy have to go: leaving either in
+# place means the delete still fails and the guarantee is never actually broken.
+probe "review history being undeletable" \
+  "grant delete on public.review_items to authenticated;
+   create policy review_items_delete on public.review_items
+     for delete to authenticated using (true);" \
+  "REVIEW HISTORY CANNOT BE DELETED"
+
+probe "managers being unable to create an administrator" \
+  "insert into public.role_permissions (role_code, permission_code)
+     values ('manager', 'role.manage') on conflict do nothing;
+   drop trigger guard_admin_grant on public.user_roles;" \
+  "MANAGER CANNOT CREATE AN ADMIN"
+
+probe "users being unable to change their own account status" \
+  "drop trigger guard_user_self_update on public.users;" \
+  "A USER CANNOT CHANGE THEIR OWN ACCOUNT STATUS"
+
 probe "cross-candidate attachment being structurally impossible" \
   "alter table public.interviews
      drop constraint interviews_application_id_candidate_id_fkey;
