@@ -54,3 +54,53 @@ $$;
 
 grant usage on schema auth to anon, authenticated, service_role;
 grant select on auth.users to authenticated, service_role;
+
+-- ---------------------------------------------------------------------------
+-- STORAGE SHIM
+--
+-- Supabase provides the storage schema, storage.objects and the
+-- storage.foldername() helper. Without them the storage policies in 0011 and
+-- 0023 skip themselves, which means the guarantee "a candidate cannot download
+-- another candidate's file" would never actually be executed by any test.
+--
+-- Recreating just enough of that surface lets the REAL policies run locally
+-- and be asserted against, rather than taken on trust.
+-- ---------------------------------------------------------------------------
+create schema if not exists storage;
+
+create table if not exists storage.buckets (
+  id                 text primary key,
+  name               text not null,
+  public             boolean not null default false,
+  file_size_limit    bigint,
+  allowed_mime_types text[],
+  created_at         timestamptz not null default now()
+);
+
+create table if not exists storage.objects (
+  id         uuid primary key default gen_random_uuid(),
+  bucket_id  text not null references storage.buckets(id),
+  name       text not null,
+  owner      uuid,
+  metadata   jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  unique (bucket_id, name)
+);
+
+-- Matches Supabase's helper: splits an object path into its segments, so
+-- (storage.foldername(name))[1] is the candidate id under our path convention.
+create or replace function storage.foldername(name text)
+returns text[]
+language sql
+immutable
+as $$
+  select string_to_array(name, '/')
+$$;
+
+alter table storage.objects enable row level security;
+alter table storage.objects force row level security;
+
+grant usage on schema storage to authenticated, service_role;
+grant select, insert, update, delete on storage.objects to authenticated;
+grant select on storage.buckets to authenticated;
+revoke all on storage.objects, storage.buckets from anon;

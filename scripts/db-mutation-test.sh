@@ -29,7 +29,13 @@ probe() {
   admin_run "dropdb --if-exists ${MUT_DB}" >/dev/null 2>&1 || true
   TEST_DB="${MUT_DB}" "${ROOT}/scripts/db-test.sh" >/dev/null 2>&1 || true
 
-  psql_run "-q -v ON_ERROR_STOP=1 -d ${MUT_DB} -c \"${breaking_sql}\"" >/dev/null 2>&1
+  # A probe body starting with @ names a file, because nested shell quoting
+  # mangles anything containing dollar-quoted function bodies.
+  if [[ "${breaking_sql}" == @* ]]; then
+    psql_run "-q -v ON_ERROR_STOP=1 -d ${MUT_DB} -f ${ROOT}/${breaking_sql#@}" >/dev/null 2>&1
+  else
+    psql_run "-q -v ON_ERROR_STOP=1 -d ${MUT_DB} -c \"${breaking_sql}\"" >/dev/null 2>&1
+  fi
   psql_run "-q -d ${MUT_DB} -f ${ROOT}/supabase/tests/02_rls_tests.sql" >/dev/null 2>&1 || true
 
   local caught
@@ -70,6 +76,44 @@ probe "internal notes staying out of the portal" \
      for select to authenticated
      using (candidate_id = (select util.own_candidate_id()));" \
   "CANDIDATE CANNOT READ INTERNAL NOTE ACTIVITIES"
+
+probe "candidate isolation on interviews" \
+  "drop policy interviews_select_own on public.interviews;
+   create policy interviews_select_own on public.interviews
+     for select to authenticated
+     using ((select util.own_candidate_id()) is not null);" \
+  "CANDIDATE A CANNOT READ INTERVIEWS OF CANDIDATE B"
+
+probe "candidate isolation on assessments" \
+  "drop policy assessments_select_own on public.assessments;
+   create policy assessments_select_own on public.assessments
+     for select to authenticated
+     using ((select util.own_candidate_id()) is not null);" \
+  "CANDIDATE A CANNOT READ ASSESSMENTS OF CANDIDATE B"
+
+probe "notification privacy" \
+  "drop policy notifications_select_own on public.notifications;
+   create policy notifications_select_own on public.notifications
+     for select to authenticated using (true);" \
+  "CANDIDATE A CANNOT READ NOTIFICATIONS OF CANDIDATE B"
+
+probe "stored files staying private between candidates" \
+  "drop policy documents_read_own on storage.objects;
+   create policy documents_read_own on storage.objects
+     for select to authenticated
+     using (bucket_id = 'candidate-documents' and (select util.own_candidate_id()) is not null);" \
+  "CANDIDATE A CANNOT READ STORED FILES OF CANDIDATE B"
+
+probe "notification idempotency" \
+  "@supabase/tests/mutations/notification_idempotency.sql" \
+  "DUPLICATE NOTIFICATIONS ARE PREVENTED FOR A REPEATED EVENT"
+
+probe "cross-candidate attachment being structurally impossible" \
+  "alter table public.interviews
+     drop constraint interviews_application_id_candidate_id_fkey;
+   alter table public.marketing_activities
+     drop constraint marketing_activities_application_id_candidate_id_fkey;" \
+  "INTERVIEW CANNOT BE ATTACHED ACROSS CANDIDATES"
 
 echo
 if [[ "${FAILED}" -eq 0 ]]; then

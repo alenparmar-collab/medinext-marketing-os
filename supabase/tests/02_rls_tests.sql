@@ -34,6 +34,18 @@ truncate test.results;
 \set APP_HIROSHI 00000000-0000-4000-8f00-00000000000c
 \set ACT_NOTE    00000000-0000-4000-9100-000000000006
 
+-- Build 4: interviews, assessments, notifications
+\set IV_PRIYA_DONE  00000000-0000-4000-9200-000000000001
+\set IV_PRIYA_NEXT  00000000-0000-4000-9200-000000000002
+\set IV_LUCIA       00000000-0000-4000-9200-000000000003
+\set IV_HIROSHI     00000000-0000-4000-9200-000000000005
+\set AS_PRIYA_DONE  00000000-0000-4000-9300-000000000001
+\set AS_PRIYA_OPEN  00000000-0000-4000-9300-000000000002
+\set AS_LUCIA       00000000-0000-4000-9300-000000000003
+\set DOC_PRIYA_PUB  00000000-0000-4000-8d00-000000000001
+\set DOC_PRIYA_INT  00000000-0000-4000-8d00-000000000002
+\set DOC_LUCIA      00000000-0000-4000-8d00-000000000003
+
 -- ---------------------------------------------------------------------------
 -- SECTION 1 — Unauthenticated access
 -- ---------------------------------------------------------------------------
@@ -568,6 +580,414 @@ select test.check('timeline', 'a recruiter gets nothing from an unassigned candi
   test.count_as(:'SALAS',
     'select count(*) from public.candidate_timeline(' || quote_literal(:'NAOMI') || ')'), 0::bigint);
 
+-- ===========================================================================
+-- BUILD 4 — Interviews, assessments, notifications, documents
+-- ===========================================================================
+
+-- ---------------------------------------------------------------------------
+-- SECTION 17 — Internal scope over interviews and assessments
+-- ---------------------------------------------------------------------------
+select test.check('interviews', 'admin sees every interview across both units',
+  test.count_as(:'ADMIN', 'select count(*) from public.interviews'), 5::bigint);
+
+select test.check('interviews', 'manager sees their unit''s 4 interviews only',
+  test.count_as(:'MANAGER', 'select count(*) from public.interviews'), 4::bigint);
+
+select test.check('interviews', 'recruiter Salas sees only their candidates'' 3 interviews',
+  test.count_as(:'SALAS', 'select count(*) from public.interviews'), 3::bigint);
+
+select test.check('interviews', 'RECRUITER CANNOT ACCESS AN UNAUTHORIZED CANDIDATE INTERVIEW',
+  test.count_as(:'SALAS',
+    'select count(*) from public.interviews where id = ' || quote_literal(:'IV_LUCIA')), 0::bigint);
+
+select test.check('interviews', 'cross-unit: EU manager cannot see the APAC interview',
+  test.count_as(:'MANAGER',
+    'select count(*) from public.interviews where id = ' || quote_literal(:'IV_HIROSHI')), 0::bigint);
+
+select test.check('assessments', 'admin sees every assessment across both units',
+  test.count_as(:'ADMIN', 'select count(*) from public.assessments'), 4::bigint);
+
+select test.check('assessments', 'recruiter Salas sees only their candidates'' 2 assessments',
+  test.count_as(:'SALAS', 'select count(*) from public.assessments'), 2::bigint);
+
+select test.check('assessments', 'RECRUITER CANNOT ACCESS AN UNAUTHORIZED CANDIDATE ASSESSMENT',
+  test.count_as(:'SALAS',
+    'select count(*) from public.assessments where id = ' || quote_literal(:'AS_LUCIA')), 0::bigint);
+
+-- ---------------------------------------------------------------------------
+-- SECTION 18 — CANDIDATE ISOLATION on the new records  ***critical***
+-- ---------------------------------------------------------------------------
+select test.check('isolation', 'candidate Priya sees her own 2 interviews',
+  test.count_as(:'PRIYA_USER', 'select count(*) from public.interviews'), 2::bigint);
+
+select test.check('isolation', 'CANDIDATE A CANNOT READ INTERVIEWS OF CANDIDATE B',
+  test.count_as(:'PRIYA_USER',
+    'select count(*) from public.interviews where candidate_id = ' || quote_literal(:'LUCIA')), 0::bigint);
+
+select test.check('isolation', 'candidate B cannot read interviews of candidate A (reverse)',
+  test.count_as(:'LUCIA_USER',
+    'select count(*) from public.interviews where candidate_id = ' || quote_literal(:'PRIYA')), 0::bigint);
+
+select test.check('isolation', 'candidate cannot read a named interview of another candidate',
+  test.count_as(:'PRIYA_USER',
+    'select count(*) from public.interviews where id = ' || quote_literal(:'IV_LUCIA')), 0::bigint);
+
+select test.check('isolation', 'CANDIDATE A CANNOT READ ASSESSMENTS OF CANDIDATE B',
+  test.count_as(:'PRIYA_USER',
+    'select count(*) from public.assessments where candidate_id = ' || quote_literal(:'LUCIA')), 0::bigint);
+
+select test.check('isolation', 'candidate B cannot read assessments of candidate A (reverse)',
+  test.count_as(:'LUCIA_USER',
+    'select count(*) from public.assessments where candidate_id = ' || quote_literal(:'PRIYA')), 0::bigint);
+
+select test.check('isolation', 'candidate cannot read interview scheduling history',
+  test.count_as(:'PRIYA_USER', 'select count(*) from public.interview_schedule_history'), 0::bigint);
+
+-- ---------------------------------------------------------------------------
+-- SECTION 19 — Notifications
+-- ---------------------------------------------------------------------------
+select test.check('notifications', 'the candidate received notifications for their own events',
+  (test.count_as(:'PRIYA_USER', 'select count(*) from public.notifications') > 0), true);
+
+select test.check('notifications', 'CANDIDATE A CANNOT READ NOTIFICATIONS OF CANDIDATE B',
+  test.count_as(:'PRIYA_USER',
+    'select count(*) from public.notifications where recipient_id = ' || quote_literal(:'LUCIA_USER')),
+  0::bigint);
+
+select test.check('notifications', 'candidate B cannot read notifications of candidate A (reverse)',
+  test.count_as(:'LUCIA_USER',
+    'select count(*) from public.notifications where recipient_id = ' || quote_literal(:'PRIYA_USER')),
+  0::bigint);
+
+select test.check('notifications', 'even an admin cannot read another user''s notifications',
+  test.count_as(:'ADMIN',
+    'select count(*) from public.notifications where recipient_id <> ' || quote_literal(:'ADMIN')),
+  0::bigint);
+
+select test.check('notifications', 'the assigned recruiter was notified too',
+  (test.count_as(:'SALAS', 'select count(*) from public.notifications') > 0), true);
+
+select test.check('notifications', 'an unrelated recruiter was not notified about this candidate',
+  test.count_as(:'ROSSI',
+    'select count(*) from public.notifications where entity_id = ' || quote_literal(:'IV_PRIYA_NEXT')),
+  0::bigint);
+
+select test.check('notifications', 'CANDIDATE CANNOT CREATE A NOTIFICATION',
+  test.write_denied(:'PRIYA_USER',
+    'insert into public.notifications (business_unit_id, recipient_id, notification_type, title, dedupe_key) values ('
+    || quote_literal(:'EU_UNIT') || ', ' || quote_literal(:'PRIYA_USER')
+    || ', ''important_marketing_update'', ''Forged'', ''forged:1'')'), true);
+
+select test.check('notifications', 'a recruiter cannot create a notification directly either',
+  test.write_denied(:'SALAS',
+    'insert into public.notifications (business_unit_id, recipient_id, notification_type, title, dedupe_key) values ('
+    || quote_literal(:'EU_UNIT') || ', ' || quote_literal(:'SALAS')
+    || ', ''important_marketing_update'', ''Forged'', ''forged:2'')'), true);
+
+select test.check('notifications', 'a candidate CAN mark their own notification read',
+  test.write_allowed(:'PRIYA_USER',
+    'update public.notifications set read_at = now() where read_at is null'), true);
+
+select test.check('notifications', 'a candidate cannot mark another user''s notification read',
+  test.write_denied(:'PRIYA_USER',
+    'update public.notifications set read_at = now() where recipient_id = ' || quote_literal(:'LUCIA_USER')),
+  true);
+
+-- Idempotency: re-observing the SAME event must not produce a second
+-- notification.
+--
+-- This has to reach the emit path to prove anything. A no-op update returns
+-- early from the notify trigger, so instead the interview is moved to a new
+-- time, moved away, and moved BACK to the first time — which regenerates the
+-- identical dedupe key, exactly as a retried email job would.
+do $$
+declare
+  v_original timestamptz;
+  v_before bigint;
+  v_after  bigint;
+begin
+  select scheduled_at into v_original from public.interviews
+   where id = '00000000-0000-4000-9200-000000000003';
+
+  -- First observation of "rescheduled to T1".
+  update public.interviews set scheduled_at = v_original + interval '1 day'
+   where id = '00000000-0000-4000-9200-000000000003';
+
+  -- Counted for ONE recipient, because the dedupe index is scoped per
+  -- recipient and the audience is several people.
+  select count(*) into v_before from public.notifications
+   where entity_id = '00000000-0000-4000-9200-000000000003'
+     and recipient_id = '00000000-0000-4000-8000-000000000013';
+
+  -- Move away, then back to T1: the dedupe key for T1 repeats.
+  update public.interviews set scheduled_at = v_original + interval '2 days'
+   where id = '00000000-0000-4000-9200-000000000003';
+  update public.interviews set scheduled_at = v_original + interval '1 day'
+   where id = '00000000-0000-4000-9200-000000000003';
+
+  select count(*) into v_after from public.notifications
+   where entity_id = '00000000-0000-4000-9200-000000000003'
+     and recipient_id = '00000000-0000-4000-8000-000000000013';
+
+  -- The move to T2 legitimately adds one. Returning to T1 must add nothing.
+  insert into test.results (section, name, passed, detail)
+  values ('notifications', 'DUPLICATE NOTIFICATIONS ARE PREVENTED FOR A REPEATED EVENT',
+          v_after = v_before + 1, format('before %s, after %s (expected +1 only)', v_before, v_after));
+end $$;
+
+-- ---------------------------------------------------------------------------
+-- SECTION 20 — Write authorization on interviews and assessments
+-- ---------------------------------------------------------------------------
+select test.check('writes', 'recruiter CAN schedule an interview for their candidate',
+  test.write_allowed(:'SALAS',
+    'insert into public.interviews (business_unit_id, candidate_id, application_id, scheduled_at) values ('
+    || quote_literal(:'EU_UNIT') || ', ' || quote_literal(:'PRIYA') || ', '
+    || quote_literal(:'APP_PRIYA_1') || ', now() + interval ''3 days'')'), true);
+
+select test.check('writes', 'recruiter CANNOT schedule an interview for a colleague''s candidate',
+  test.write_denied(:'SALAS',
+    'insert into public.interviews (business_unit_id, candidate_id, application_id, scheduled_at) values ('
+    || quote_literal(:'EU_UNIT') || ', ' || quote_literal(:'LUCIA') || ', '
+    || quote_literal(:'APP_LUCIA_1') || ', now())'), true);
+
+select test.check('writes', 'CANDIDATE CANNOT MODIFY AN INTERVIEW',
+  test.write_denied(:'PRIYA_USER',
+    'update public.interviews set scheduled_at = now() where id = ' || quote_literal(:'IV_PRIYA_NEXT')),
+  true);
+
+select test.check('writes', 'candidate cannot cancel their own interview',
+  test.write_denied(:'PRIYA_USER',
+    'update public.interviews set status = ''cancelled'' where id = ' || quote_literal(:'IV_PRIYA_NEXT')),
+  true);
+
+select test.check('writes', 'candidate cannot create an interview',
+  test.write_denied(:'PRIYA_USER',
+    'insert into public.interviews (business_unit_id, candidate_id, application_id) values ('
+    || quote_literal(:'EU_UNIT') || ', ' || quote_literal(:'PRIYA') || ', '
+    || quote_literal(:'APP_PRIYA_1') || ')'), true);
+
+select test.check('writes', 'CANDIDATE CANNOT MODIFY AN ASSESSMENT',
+  test.write_denied(:'PRIYA_USER',
+    'update public.assessments set status = ''passed'' where id = ' || quote_literal(:'AS_PRIYA_OPEN')),
+  true);
+
+select test.check('writes', 'candidate cannot create an assessment',
+  test.write_denied(:'PRIYA_USER',
+    'insert into public.assessments (business_unit_id, candidate_id, application_id, assessment_type) values ('
+    || quote_literal(:'EU_UNIT') || ', ' || quote_literal(:'PRIYA') || ', '
+    || quote_literal(:'APP_PRIYA_1') || ', ''Self added'')'), true);
+
+select test.check('writes', 'CANDIDATE CANNOT CREATE AN INTERNAL NOTE',
+  test.write_denied(:'PRIYA_USER',
+    'insert into public.candidate_internal_notes (business_unit_id, candidate_id, body, created_by) values ('
+    || quote_literal(:'EU_UNIT') || ', ' || quote_literal(:'PRIYA') || ', ''Injected'', '
+    || quote_literal(:'PRIYA_USER') || ')'), true);
+
+select test.check('writes', 'CANDIDATE CANNOT READ THE AUDIT LOG',
+  test.count_as(:'PRIYA_USER', 'select count(*) from audit.audit_logs'), -1::bigint);
+
+select test.check('writes', 'recruiter CANNOT delete an interview (lacks interview.delete)',
+  test.write_denied(:'SALAS',
+    'delete from public.interviews where id = ' || quote_literal(:'IV_PRIYA_DONE')), true);
+
+select test.check('writes', 'nobody can edit interview scheduling history',
+  test.write_denied(:'MANAGER',
+    'update public.interview_schedule_history set reason = ''rewritten'''), true);
+
+select test.check('writes', 'nobody can delete interview scheduling history',
+  test.write_denied(:'MANAGER', 'delete from public.interview_schedule_history'), true);
+
+-- ---------------------------------------------------------------------------
+-- SECTION 21 — CROSS-CANDIDATE RELATIONSHIP ATTACK
+--
+-- The composite foreign key must make it structurally impossible to attach a
+-- record to one candidate while pointing at another candidate's application,
+-- even for a user authorised on BOTH candidates.
+-- ---------------------------------------------------------------------------
+do $$
+declare v_blocked boolean := false;
+begin
+  begin
+    insert into public.interviews (business_unit_id, candidate_id, application_id)
+    values ('00000000-0000-4000-9000-000000000001',
+            '00000000-0000-4000-a000-000000000001',   -- Priya
+            '00000000-0000-4000-8f00-000000000007');  -- Lucia's application
+  exception when others then
+    v_blocked := true;
+  end;
+  insert into test.results (section, name, passed, detail)
+  values ('integrity', 'INTERVIEW CANNOT BE ATTACHED ACROSS CANDIDATES', v_blocked,
+          case when v_blocked then 'ok' else 'the mismatched insert was accepted' end);
+end $$;
+
+do $$
+declare v_blocked boolean := false;
+begin
+  begin
+    insert into public.assessments (business_unit_id, candidate_id, application_id, assessment_type)
+    values ('00000000-0000-4000-9000-000000000001',
+            '00000000-0000-4000-a000-000000000001',
+            '00000000-0000-4000-8f00-000000000007', 'Cross attach');
+  exception when others then
+    v_blocked := true;
+  end;
+  insert into test.results (section, name, passed, detail)
+  values ('integrity', 'ASSESSMENT CANNOT BE ATTACHED ACROSS CANDIDATES', v_blocked,
+          case when v_blocked then 'ok' else 'the mismatched insert was accepted' end);
+end $$;
+
+do $$
+declare v_blocked boolean := false;
+begin
+  begin
+    update public.interviews
+       set candidate_id = '00000000-0000-4000-a000-000000000003'
+     where id = '00000000-0000-4000-9200-000000000001';
+  exception when others then
+    v_blocked := true;
+  end;
+  insert into test.results (section, name, passed, detail)
+  values ('integrity', 'an interview cannot be moved to another candidate', v_blocked,
+          case when v_blocked then 'ok' else 'the reassignment was accepted' end);
+end $$;
+
+-- ---------------------------------------------------------------------------
+-- SECTION 22 — Scheduling history is preserved
+-- ---------------------------------------------------------------------------
+select test.check('history', 'the seeded reschedule wrote a history row',
+  (select count(*) from public.interview_schedule_history
+    where interview_id = '00000000-0000-4000-9200-000000000002'
+      and change_kind = 'rescheduled'), 1::bigint);
+
+select test.check('history', 'THE ORIGINAL SCHEDULED TIME IS STILL RECOVERABLE',
+  (select count(*) > 0 from public.interview_schedule_history
+    where interview_id = '00000000-0000-4000-9200-000000000002'
+      and change_kind = 'rescheduled'
+      and previous_scheduled_at is not null
+      and previous_scheduled_at <> new_scheduled_at), true);
+
+select test.check('history', 'the reason given for the move was kept',
+  (select count(*) > 0 from public.interview_schedule_history
+    where interview_id = '00000000-0000-4000-9200-000000000002'
+      and change_kind = 'rescheduled' and reason is not null), true);
+
+select test.check('history', 'every interview has an opening history row',
+  (select count(*) from public.interviews i
+    where not exists (
+      select 1 from public.interview_schedule_history h
+       where h.interview_id = i.id and h.change_kind = 'scheduled')), 0::bigint);
+
+-- ---------------------------------------------------------------------------
+-- SECTION 23 — Activity mirroring stays idempotent
+-- ---------------------------------------------------------------------------
+select test.check('automation', 'every interview has exactly one mirroring activity',
+  (select count(*) from public.interviews i
+    where (select count(*) from public.marketing_activities m where m.interview_id = i.id) <> 1),
+  0::bigint);
+
+select test.check('automation', 'every assessment has exactly one mirroring activity',
+  (select count(*) from public.assessments a
+    where (select count(*) from public.marketing_activities m where m.assessment_id = a.id) <> 1),
+  0::bigint);
+
+select test.check('automation', 'interview changes are captured in the audit log',
+  (select count(*) > 0 from audit.audit_logs where entity_type = 'interviews'), true);
+
+select test.check('automation', 'assessment changes are captured in the audit log',
+  (select count(*) > 0 from audit.audit_logs where entity_type = 'assessments'), true);
+
+select test.check('automation', 'notification creation is captured in the audit log',
+  (select count(*) > 0 from audit.audit_logs where entity_type = 'notifications'), true);
+
+select test.check('automation', 'schedule history changes are captured in the audit log',
+  (select count(*) > 0 from audit.audit_logs where entity_type = 'interview_schedule_history'), true);
+
+-- ---------------------------------------------------------------------------
+-- SECTION 24 — DOCUMENT STORAGE POLICIES
+--
+-- These run against real storage.objects rows and the real policies from 0011
+-- and 0023, so the download guarantee is executed rather than asserted.
+-- ---------------------------------------------------------------------------
+select test.check('storage', 'internal recruiter can read their candidate''s stored files',
+  test.count_as(:'SALAS',
+    'select count(*) from storage.objects where bucket_id = ''candidate-documents'''), 2::bigint);
+
+select test.check('storage', 'RECRUITER CANNOT READ FILES OF AN UNAUTHORIZED CANDIDATE',
+  test.count_as(:'SALAS',
+    'select count(*) from storage.objects where name like ' || quote_literal(:'LUCIA') || ' || ''/%'''),
+  0::bigint);
+
+select test.check('storage', 'candidate can read only their own PUBLISHED file',
+  test.count_as(:'PRIYA_USER',
+    'select count(*) from storage.objects where bucket_id = ''candidate-documents'''), 1::bigint);
+
+select test.check('storage', 'CANDIDATE A CANNOT READ STORED FILES OF CANDIDATE B',
+  test.count_as(:'PRIYA_USER',
+    'select count(*) from storage.objects where name like ' || quote_literal(:'LUCIA') || ' || ''/%'''),
+  0::bigint);
+
+select test.check('storage', 'candidate cannot read an internal-only file of their own',
+  test.count_as(:'PRIYA_USER',
+    'select count(*) from storage.objects where name like ''%formatted_resume%'''), 0::bigint);
+
+select test.check('storage', 'candidate CAN upload into their own folder',
+  test.write_allowed(:'PRIYA_USER',
+    'insert into storage.objects (bucket_id, name) values (''candidate-documents'', '
+    || quote_literal(:'PRIYA') || ' || ''/resume/uploaded-by-candidate.pdf'')'), true);
+
+select test.check('storage', 'CANDIDATE CANNOT UPLOAD INTO ANOTHER CANDIDATE''S FOLDER',
+  test.write_denied(:'PRIYA_USER',
+    'insert into storage.objects (bucket_id, name) values (''candidate-documents'', '
+    || quote_literal(:'LUCIA') || ' || ''/resume/planted.pdf'')'), true);
+
+select test.check('storage', 'candidate cannot delete a stored file',
+  test.write_denied(:'PRIYA_USER',
+    'delete from storage.objects where bucket_id = ''candidate-documents'''), true);
+
+select test.check('storage', 'anonymous callers hold no storage privileges',
+  test.count_anon('select count(*) from storage.objects'), -1::bigint);
+
+-- ---------------------------------------------------------------------------
+-- SECTION 25 — Document metadata authorization
+-- ---------------------------------------------------------------------------
+select test.check('documents', 'CANDIDATE A CANNOT READ DOCUMENT METADATA OF CANDIDATE B',
+  test.count_as(:'PRIYA_USER',
+    'select count(*) from public.documents where candidate_id = ' || quote_literal(:'LUCIA')), 0::bigint);
+
+select test.check('documents', 'candidate CAN record an upload of their own',
+  test.write_allowed(:'PRIYA_USER',
+    'insert into public.documents (business_unit_id, candidate_id, document_type, file_name, '
+    || 'storage_path, mime_type, size_bytes, visibility, uploaded_by) values ('
+    || quote_literal(:'EU_UNIT') || ', ' || quote_literal(:'PRIYA')
+    || ', ''resume'', ''my-cv.pdf'', ' || quote_literal(:'PRIYA')
+    || ' || ''/resume/my-cv.pdf'', ''application/pdf'', 1024, ''candidate_visible'', '
+    || quote_literal(:'PRIYA_USER') || ')'), true);
+
+select test.check('documents', 'candidate CANNOT record an upload against another candidate',
+  test.write_denied(:'PRIYA_USER',
+    'insert into public.documents (business_unit_id, candidate_id, document_type, file_name, '
+    || 'storage_path, mime_type, size_bytes, visibility, uploaded_by) values ('
+    || quote_literal(:'EU_UNIT') || ', ' || quote_literal(:'LUCIA')
+    || ', ''resume'', ''planted.pdf'', ''planted/path.pdf'', ''application/pdf'', 1024, '
+    || '''candidate_visible'', ' || quote_literal(:'PRIYA_USER') || ')'), true);
+
+select test.check('documents', 'candidate cannot upload an INTERNAL-visibility document',
+  test.write_denied(:'PRIYA_USER',
+    'insert into public.documents (business_unit_id, candidate_id, document_type, file_name, '
+    || 'storage_path, mime_type, size_bytes, visibility, uploaded_by) values ('
+    || quote_literal(:'EU_UNIT') || ', ' || quote_literal(:'PRIYA')
+    || ', ''resume'', ''sneaky.pdf'', ''sneaky/path.pdf'', ''application/pdf'', 1024, '
+    || '''internal'', ' || quote_literal(:'PRIYA_USER') || ')'), true);
+
+select test.check('documents', 'candidate cannot publish an internal document to themselves',
+  test.write_denied(:'PRIYA_USER',
+    'update public.documents set visibility = ''candidate_visible'' where visibility = ''internal'''),
+  true);
+
+select test.check('documents', 'candidate cannot delete a document',
+  test.write_denied(:'PRIYA_USER',
+    'delete from public.documents where candidate_id = ' || quote_literal(:'PRIYA')), true);
+
 -- ---------------------------------------------------------------------------
 -- SECTION 9 — Assignment lifecycle drives access
 -- ---------------------------------------------------------------------------
@@ -635,7 +1055,8 @@ select test.check('structure', 'every business table carries business_unit_id',
   (select count(*) from (values
      ('candidates'),('candidate_assignments'),('marketing_periods'),
      ('documents'),('candidate_internal_notes'),
-     ('applications'),('marketing_activities')) as t(tbl)
+     ('applications'),('marketing_activities'),
+     ('interviews'),('assessments'),('notifications')) as t(tbl)
    where not exists (
      select 1 from information_schema.columns
       where table_schema='public' and table_name=t.tbl and column_name='business_unit_id'
@@ -645,7 +1066,9 @@ select test.check('structure', 'every audited business table has the audit trigg
   (select count(*) from (values
      ('candidates'),('candidate_assignments'),('marketing_periods'),
      ('documents'),('users'),('user_roles'),('candidate_internal_notes'),
-     ('applications'),('marketing_activities'),('application_status_history')) as t(tbl)
+     ('applications'),('marketing_activities'),('application_status_history'),
+     ('interviews'),('assessments'),('notifications'),
+     ('interview_schedule_history')) as t(tbl)
    where not exists (
      select 1 from pg_trigger tg
        join pg_class c on c.oid = tg.tgrelid

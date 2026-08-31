@@ -10,8 +10,10 @@
 --     can fail.
 --   * Applications on candidates in BOTH business units, so cross-tenant
 --     isolation on applications can fail.
---   * At least one interview, assessment and rejection activity, so the
---     derived counts have something real to count.
+--   * At least one rejection activity, so the derived counts have something
+--     real to count. Interviews and assessments became first-class records in
+--     Build 4 and are seeded in 04, where database triggers produce their
+--     activities — hand-writing them here would double-count.
 --   * An internal NOTE activity and an internal note row, so "a candidate can
 --     never read internal commentary" can fail.
 --
@@ -136,22 +138,6 @@ insert into public.marketing_activities (
    '{"company_name":"Northwind Clinical","responder":"D. Whitfield","channel":"phone"}'::jsonb,
    'manual', now(), '00000000-0000-4000-8000-000000000003', '00000000-0000-4000-8000-000000000003'),
 
-  ('00000000-0000-4000-9100-000000000002', '00000000-0000-4000-9000-000000000001',
-   '00000000-0000-4000-a000-000000000001', '00000000-0000-4000-8f00-000000000001',
-   '00000000-0000-4000-8c00-000000000001',
-   'interview', now() - interval '40 days',
-   'First-round technical interview, Northwind Clinical',
-   '{"company_name":"Northwind Clinical","round":1,"mode":"video","outcome":"passed"}'::jsonb,
-   'manual', now(), '00000000-0000-4000-8000-000000000003', '00000000-0000-4000-8000-000000000003'),
-
-  ('00000000-0000-4000-9100-000000000003', '00000000-0000-4000-9000-000000000001',
-   '00000000-0000-4000-a000-000000000001', '00000000-0000-4000-8f00-000000000002',
-   '00000000-0000-4000-8c00-000000000001',
-   'assessment', now() - interval '35 days',
-   'SAS programming assessment issued by Halcyon Life Sciences',
-   '{"company_name":"Halcyon Life Sciences","platform":"HackerRank","due_in_days":5}'::jsonb,
-   'manual', now(), '00000000-0000-4000-8000-000000000003', '00000000-0000-4000-8000-000000000003'),
-
   ('00000000-0000-4000-9100-000000000004', '00000000-0000-4000-9000-000000000001',
    '00000000-0000-4000-a000-000000000001', '00000000-0000-4000-8f00-000000000003',
    '00000000-0000-4000-8c00-000000000001',
@@ -184,14 +170,6 @@ insert into public.marketing_activities (
    '{"company_name":"Shannon Safety Group","responder":"M. Byrne"}'::jsonb,
    'manual', now(), '00000000-0000-4000-8000-000000000004', '00000000-0000-4000-8000-000000000004'),
 
-  ('00000000-0000-4000-9100-000000000008', '00000000-0000-4000-9000-000000000001',
-   '00000000-0000-4000-a000-000000000003', '00000000-0000-4000-8f00-000000000007',
-   '00000000-0000-4000-8c00-000000000003',
-   'interview', now() - interval '13 days',
-   'Panel interview, Shannon Safety Group',
-   '{"company_name":"Shannon Safety Group","round":2,"mode":"onsite","outcome":"passed"}'::jsonb,
-   'manual', now(), '00000000-0000-4000-8000-000000000004', '00000000-0000-4000-8000-000000000004'),
-
   ('00000000-0000-4000-9100-000000000009', '00000000-0000-4000-9000-000000000001',
    '00000000-0000-4000-a000-000000000003', '00000000-0000-4000-8f00-000000000007',
    '00000000-0000-4000-8c00-000000000003',
@@ -206,16 +184,8 @@ insert into public.marketing_activities (
    'recruiter_response', now() - interval '25 days',
    'Aldergate Regulatory recruiter replied',
    '{"company_name":"Aldergate Regulatory"}'::jsonb,
-   'manual', now(), '00000000-0000-4000-8000-000000000003', '00000000-0000-4000-8000-000000000003'),
+   'manual', now(), '00000000-0000-4000-8000-000000000003', '00000000-0000-4000-8000-000000000003')
 
-  -- Other business unit.
-  ('00000000-0000-4000-9100-00000000000b', '00000000-0000-4000-9000-000000000002',
-   '00000000-0000-4000-a000-000000000006', '00000000-0000-4000-8f00-00000000000c',
-   '00000000-0000-4000-8c00-000000000005',
-   'interview', now() - interval '6 days',
-   'Screening call, Kansai Clinical Partners',
-   '{"company_name":"Kansai Clinical Partners","round":1}'::jsonb,
-   'manual', now(), '00000000-0000-4000-8000-000000000005', '00000000-0000-4000-8000-000000000005')
 on conflict (id) do nothing;
 
 select set_config('app.actor_id', '', false);
