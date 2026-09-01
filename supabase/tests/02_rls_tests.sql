@@ -2761,24 +2761,44 @@ select test.check('intelligence', 'NO FUNCTION PROMOTES AN INTERPRETATION INTO A
       and p.prosrc ~* 'insert into public\.(candidates|applications|interviews|assessments|marketing_activities|notifications)'),
   0::bigint);
 
--- The seeded readings classify interviews, assessments and rejections. None of
--- them produced one.
-select test.check('intelligence', 'AN INTERVIEW READING CREATED NO INTERVIEW',
+-- Build 7A asserted here that a reading created nothing at all. Build 7B makes
+-- that false on purpose: an approved decision DOES create a record. The claim
+-- that survives is narrower and stronger — a CRM record may cite an
+-- interpretation only through a decision that was approved.
+--
+-- Anything citing a reading with no approved decision behind it would mean the
+-- pipeline wrote something nobody decided on, which is the failure this whole
+-- build exists to prevent.
+select test.check('intelligence', 'NO INTERVIEW CITES AN INTERPRETATION WITHOUT AN APPROVED DECISION',
   (select count(*) from public.interviews i
-    where exists (
-      select 1 from public.email_intelligence_runs r
-      where r.event_type = 'interview'
-        and i.source_reference is not null
-        and i.source_reference like '%' || r.id::text || '%'
-    )), 0::bigint);
+    where i.source_reference like 'intelligence:%'
+      and not exists (
+        select 1 from public.intelligence_review_items d
+        where d.status = 'approved' and d.created_interview_id = i.id
+      )), 0::bigint);
 
-select test.check('intelligence', 'no application traces back to an interpretation',
+select test.check('intelligence', 'NO APPLICATION CITES AN INTERPRETATION WITHOUT AN APPROVED DECISION',
   (select count(*) from public.applications a
-    where exists (
-      select 1 from public.email_intelligence_runs r
-      where a.source_reference is not null
-        and a.source_reference like '%' || r.id::text || '%'
-    )), 0::bigint);
+    where a.source_reference like 'intelligence:%'
+      and not exists (
+        select 1 from public.intelligence_review_items d
+        where d.status = 'approved' and d.created_application_id = a.id
+      )), 0::bigint);
+
+select test.check('intelligence', 'NO ASSESSMENT CITES AN INTERPRETATION WITHOUT AN APPROVED DECISION',
+  (select count(*) from public.assessments s
+    where s.source_reference like 'intelligence:%'
+      and not exists (
+        select 1 from public.intelligence_review_items d
+        where d.status = 'approved' and d.created_assessment_id = s.id
+      )), 0::bigint);
+
+-- And the assertion is not vacuous: the seed contains a record that WAS
+-- created this way, so a version of the pipeline that stopped recording the
+-- decision would fail the checks above rather than passing them trivially.
+select test.check('intelligence', 'the approved-decision assertions are not vacuous',
+  (select count(*) > 0 from public.interviews
+    where source_reference like 'intelligence:%'), true);
 
 select test.check('intelligence', 'no notification was raised by an interpretation',
   (select count(*) from public.notifications
@@ -2829,3 +2849,457 @@ begin
           v_iv_before = v_iv_after,
           format('interviews before %s, after %s', v_iv_before, v_iv_after));
 end $$;
+
+-- ===========================================================================
+-- BUILD 7B — Decisions
+-- ===========================================================================
+
+-- ---------------------------------------------------------------------------
+-- SECTION 48 — Candidates decide nothing  ***critical***
+-- ---------------------------------------------------------------------------
+select test.check('decisions', 'CANDIDATE CANNOT READ THE PROPOSAL QUEUE',
+  test.count_as(:'PRIYA_USER', 'select count(*) from public.intelligence_review_items'), 0::bigint);
+
+select test.check('decisions', 'A PROPOSED CANDIDATE CANNOT READ THEIR OWN PROPOSAL',
+  test.count_as(:'PRIYA_USER',
+    'select count(*) from public.intelligence_review_items where proposed_candidate_id = '
+    || quote_literal(:'PRIYA')), 0::bigint);
+
+select test.check('decisions', 'CANDIDATE CANNOT APPROVE A PROPOSAL',
+  test.write_denied(:'PRIYA_USER',
+    'update public.intelligence_review_items set status = ''approved'' where id = '
+    || quote_literal('00000000-0000-4000-9c00-000000000002')), true);
+
+select test.check('decisions', 'a second candidate also reads nothing',
+  test.count_as(:'LUCIA_USER', 'select count(*) from public.intelligence_review_items'), 0::bigint);
+
+select test.check('decisions', 'anonymous callers reach no proposal',
+  test.count_anon('select count(*) from public.intelligence_review_items'), -1::bigint);
+
+-- ---------------------------------------------------------------------------
+-- SECTION 49 — Internal authorization
+-- ---------------------------------------------------------------------------
+select test.check('decisions', 'AN UNAUTHORIZED RECRUITER READS NO PROPOSAL',
+  test.count_as(:'SALAS', 'select count(*) from public.intelligence_review_items'), 0::bigint);
+
+select test.check('decisions', 'a recruiter cannot approve a proposal',
+  test.write_denied(:'SALAS',
+    'update public.intelligence_review_items set status = ''approved'' where id = '
+    || quote_literal('00000000-0000-4000-9c00-000000000002')), true);
+
+select test.check('decisions', 'AUTHORIZED MANAGER READS THEIR UNIT''S PROPOSALS',
+  test.count_as(:'MANAGER', 'select count(*) from public.intelligence_review_items'),
+  (select count(*) from public.intelligence_review_items
+    where business_unit_id = :'EU_UNIT'::uuid));
+
+select test.check('decisions', 'NOBODY CAN CREATE A PROPOSAL THROUGH THE API',
+  test.write_denied(:'ADMIN',
+    'insert into public.intelligence_review_items (business_unit_id, intelligence_run_id, '
+    || 'email_message_id, event_type, outcome, proposed_data, idempotency_key) values ('
+    || quote_literal(:'EU_UNIT') || ', ''00000000-0000-4000-9b00-000000000001'', '
+    || '''00000000-0000-4000-9800-000000000001'', ''interview'', ''auto_approve'', '
+    || '''{}''::jsonb, ''forged'')'), true);
+
+select test.check('decisions', 'nobody can delete decision history',
+  test.write_denied(:'ADMIN',
+    'delete from public.intelligence_review_items where id = '
+    || quote_literal('00000000-0000-4000-9c00-000000000004')), true);
+
+-- ---------------------------------------------------------------------------
+-- SECTION 50 — Tenancy
+-- ---------------------------------------------------------------------------
+select test.check('decisions', 'CROSS-TENANT: EU MANAGER CANNOT READ THE APAC PROPOSAL',
+  test.count_as(:'MANAGER',
+    'select count(*) from public.intelligence_review_items where id = '
+    || quote_literal('00000000-0000-4000-9c00-000000000005')), 0::bigint);
+
+select test.check('decisions', 'cross-tenant: EU manager cannot approve the APAC proposal',
+  test.write_denied(:'MANAGER',
+    'update public.intelligence_review_items set status = ''ignored'' where id = '
+    || quote_literal('00000000-0000-4000-9c00-000000000005')), true);
+
+-- ---------------------------------------------------------------------------
+-- SECTION 51 — Idempotency and the approval contract
+-- ---------------------------------------------------------------------------
+select test.check('decisions', 'ONE DECISION PER EMAIL AND EVENT TYPE',
+  (select count(*) from (
+     select business_unit_id, idempotency_key, count(*) as n
+       from public.intelligence_review_items
+      group by 1, 2 having count(*) > 1) dupes), 0::bigint);
+
+select test.check('decisions', 'the idempotency key is not derived from a timestamp',
+  (select count(*) from public.intelligence_review_items
+    where idempotency_key ~ '\d{4}-\d{2}-\d{2}T'), 0::bigint);
+
+do $$
+declare
+  c_unit    constant uuid := '00000000-0000-4000-9000-000000000001';
+  c_run     constant uuid := '00000000-0000-4000-9b00-000000000001';
+  c_email   constant uuid := '00000000-0000-4000-9800-000000000001';
+  v_blocked boolean := false;
+  v_item    uuid;
+begin
+  -- A second decision for the same email and event type is refused at the
+  -- database, which is what makes a redelivered email, a second reading and a
+  -- retried request all converge on one row.
+  begin
+    insert into public.intelligence_review_items
+      (business_unit_id, intelligence_run_id, email_message_id, event_type,
+       outcome, proposed_data, idempotency_key)
+    values (c_unit, c_run, c_email, 'application', 'review_required', '{}'::jsonb,
+            c_email::text || ':application');
+  exception when others then
+    v_blocked := true;
+  end;
+
+  insert into test.results (section, name, passed, detail)
+  values ('decisions', 'A SECOND DECISION FOR THE SAME EMAIL AND EVENT IS REFUSED',
+          v_blocked, case when v_blocked then 'ok' else 'a duplicate decision was accepted' end);
+
+  -- An approval must name what it created. An item marked approved that
+  -- produced nothing is the failure least likely to be noticed.
+  delete from public.intelligence_review_items where idempotency_key = 'test:approval-contract';
+  insert into public.intelligence_review_items
+    (business_unit_id, intelligence_run_id, email_message_id, event_type,
+     outcome, status, proposed_data, idempotency_key)
+  values (c_unit, c_run, c_email, 'interview', 'review_required', 'open', '{}'::jsonb,
+          'test:approval-contract')
+  returning id into v_item;
+
+  v_blocked := false;
+  begin
+    update public.intelligence_review_items
+       set status = 'approved', reviewed_by = '00000000-0000-4000-8000-000000000002',
+           reviewed_at = now()
+     where id = v_item;
+  exception when others then
+    v_blocked := true;
+  end;
+
+  insert into test.results (section, name, passed, detail)
+  values ('decisions', 'AN APPROVAL MUST NAME THE RECORD IT CREATED',
+          v_blocked, case when v_blocked then 'ok' else 'an empty approval was accepted' end);
+
+  -- A decided item is decided. A different answer is a new proposal from a new
+  -- reading, not an edit that erases what was approved.
+  update public.intelligence_review_items
+     set status = 'rejected', reviewed_by = '00000000-0000-4000-8000-000000000002',
+         reviewed_at = now()
+   where id = v_item;
+
+  v_blocked := false;
+  begin
+    update public.intelligence_review_items set status = 'open' where id = v_item;
+  exception when others then
+    v_blocked := true;
+  end;
+
+  insert into test.results (section, name, passed, detail)
+  values ('decisions', 'A DECIDED PROPOSAL CANNOT BE REOPENED',
+          v_blocked, case when v_blocked then 'ok' else 'rejected -> open was accepted' end);
+
+  -- Auto-approval may not carry a reason to hesitate.
+  v_blocked := false;
+  begin
+    insert into public.intelligence_review_items
+      (business_unit_id, intelligence_run_id, email_message_id, event_type,
+       outcome, proposed_data, reason_codes, idempotency_key)
+    values (c_unit, c_run, c_email, 'assessment', 'auto_approve', '{}'::jsonb,
+            array['missing_timezone']::decision_reason_code[], 'test:reserved-auto');
+  exception when others then
+    v_blocked := true;
+  end;
+
+  insert into test.results (section, name, passed, detail)
+  values ('decisions', 'AN AUTO-APPROVAL CANNOT CARRY A REASON TO HESITATE',
+          v_blocked, case when v_blocked then 'ok' else 'a reserved auto-approval was accepted' end);
+end $$;
+
+-- ---------------------------------------------------------------------------
+-- SECTION 51b — A decision cannot name a candidate from another tenant
+--
+-- The model observes identifiers in an email and the server resolves them
+-- against THIS tenant's candidates. The composite foreign key is what turns
+-- that rule into something the database enforces: a match to a person in
+-- another business unit is not refused by a check, it is unstorable.
+-- ---------------------------------------------------------------------------
+do $$
+declare
+  v_blocked boolean := false;
+begin
+  delete from public.intelligence_review_items where idempotency_key = 'test:cross-tenant-match';
+  begin
+    insert into public.intelligence_review_items
+      (business_unit_id, intelligence_run_id, email_message_id, event_type,
+       outcome, proposed_data, proposed_candidate_id, candidate_match_confidence,
+       idempotency_key)
+    values ('00000000-0000-4000-9000-000000000001',
+            '00000000-0000-4000-9b00-000000000001',
+            '00000000-0000-4000-9800-000000000001',
+            'interview', 'review_required', '{}'::jsonb,
+            -- Hiroshi Tanaka, APAC.
+            '00000000-0000-4000-a000-000000000006', 0.95,
+            'test:cross-tenant-match');
+  exception when others then
+    v_blocked := true;
+  end;
+
+  insert into test.results (section, name, passed, detail)
+  values ('decisions', 'A CROSS-TENANT CANDIDATE MATCH CANNOT BE STORED',
+          v_blocked, case when v_blocked then 'ok' else 'the match was accepted' end);
+end $$;
+
+-- And nothing already stored has slipped across, whatever route it took.
+select test.check('decisions', 'NO DECISION NAMES A CANDIDATE FROM ANOTHER TENANT',
+  (select count(*) from public.intelligence_review_items d
+     join public.candidates c on c.id = d.proposed_candidate_id
+    where c.business_unit_id <> d.business_unit_id), 0::bigint);
+
+-- ---------------------------------------------------------------------------
+-- SECTION 52 — Approval requires the CRM permission, not just queue access
+--
+-- Two gates, asked separately, because they are different questions:
+--
+--   proposal.review   may you work this queue at all?
+--   interview.manage  may you create an interview?
+--
+-- The first is the policy's job and the second is the trigger's, and a test
+-- that cannot tell them apart would go green with either one missing. So the
+-- second case grants queue access and withdraws the CRM permission, leaving
+-- the trigger as the only thing that can refuse the update.
+-- ---------------------------------------------------------------------------
+do $$
+declare
+  c_salas constant uuid := '00000000-0000-4000-8000-000000000003';
+  c_unit  constant uuid := '00000000-0000-4000-9000-000000000001';
+  v_interview uuid;
+  v_item      uuid;
+  v_blocked   boolean;
+begin
+  select i.id into v_interview
+    from public.interviews i
+   where i.business_unit_id = c_unit
+   limit 1;
+
+  -- A fresh open interview proposal, so the assertions are about the gates and
+  -- not about whatever state a seeded row happens to be in.
+  delete from public.intelligence_review_items where idempotency_key = 'test:approval-permission';
+  insert into public.intelligence_review_items
+    (business_unit_id, intelligence_run_id, email_message_id, event_type,
+     outcome, status, proposed_data, idempotency_key)
+  values (c_unit,
+          '00000000-0000-4000-9b00-000000000001',
+          '00000000-0000-4000-9800-000000000001',
+          'interview', 'review_required', 'open', '{}'::jsonb,
+          'test:approval-permission')
+  returning id into v_item;
+
+  -- ---- (a) No queue access: the policy refuses him ------------------------
+  --
+  -- Every column the constraints require is supplied, so the only thing left
+  -- that can refuse this update is authorization.
+  perform set_config('request.jwt.claims',
+    json_build_object('sub', c_salas, 'role', 'authenticated')::text, true);
+  set local role authenticated;
+  v_blocked := false;
+  begin
+    update public.intelligence_review_items
+       set status = 'approved', reviewed_by = c_salas, reviewed_at = now(),
+           created_interview_id = v_interview
+     where id = v_item;
+    if not found then v_blocked := true; end if;
+  exception when others then
+    v_blocked := true;
+  end;
+  reset role;
+
+  insert into test.results (section, name, passed, detail)
+  values ('decisions', 'A RECRUITER WITHOUT QUEUE ACCESS CANNOT APPROVE',
+          v_blocked, case when v_blocked then 'ok' else 'the approval was accepted' end);
+
+  -- ---- (b) Queue access, but not the permission for the record ------------
+  insert into public.role_permissions (role_code, permission_code) values
+    ('recruiter', 'proposal.review'),
+    ('recruiter', 'proposal.approve')
+  on conflict do nothing;
+  delete from public.role_permissions
+   where role_code = 'recruiter' and permission_code = 'interview.manage';
+
+  perform set_config('request.jwt.claims',
+    json_build_object('sub', c_salas, 'role', 'authenticated')::text, true);
+  set local role authenticated;
+  v_blocked := false;
+  begin
+    update public.intelligence_review_items
+       set status = 'approved', reviewed_by = c_salas, reviewed_at = now(),
+           created_interview_id = v_interview
+     where id = v_item;
+    if not found then v_blocked := true; end if;
+  exception when others then
+    v_blocked := true;
+  end;
+  reset role;
+
+  -- Put the roles back before asserting, so a red assertion does not also
+  -- corrupt every section after this one.
+  delete from public.role_permissions
+   where role_code = 'recruiter'
+     and permission_code in ('proposal.review', 'proposal.approve');
+  insert into public.role_permissions (role_code, permission_code)
+  values ('recruiter', 'interview.manage')
+  on conflict do nothing;
+
+  insert into test.results (section, name, passed, detail)
+  values ('decisions', 'A RECRUITER CANNOT APPROVE INTO A CRM RECORD',
+          v_blocked, case when v_blocked then 'ok' else 'the approval was accepted' end);
+end $$;
+
+-- ---------------------------------------------------------------------------
+-- SECTION 53 — Provenance and the daily report
+-- ---------------------------------------------------------------------------
+select test.check('decisions', 'AN AUTOMATIC RECORD IS MARKED UNVERIFIED',
+  (select verified_at is null from public.interviews
+    where id = '00000000-0000-4000-9200-000000000031'), true);
+
+select test.check('decisions', 'an automatic record names the reading it came from',
+  (select source_reference like 'intelligence:%' from public.interviews
+    where id = '00000000-0000-4000-9200-000000000031'), true);
+
+select test.check('decisions', 'A HUMAN-APPROVED RECORD IS MARKED VERIFIED',
+  (select verified_at is not null and verified_by is not null from public.assessments
+    where id = '00000000-0000-4000-9300-000000000031'), true);
+
+-- The proposal survives the correction that changed it.
+select test.check('decisions', 'THE ORIGINAL PROPOSAL SURVIVES A CORRECTION',
+  (select proposed_data ->> 'assessment_type' is null
+      and corrected_data ->> 'assessment_type' = 'SAS programming exercise'
+      and final_data ->> 'assessment_type' = 'SAS programming exercise'
+     from public.intelligence_review_items
+    where id = '00000000-0000-4000-9c00-000000000003'), true);
+
+select test.check('decisions', 'a rejected proposal created nothing',
+  (select created_application_id is null and created_interview_id is null
+      and created_assessment_id is null
+     from public.intelligence_review_items
+    where id = '00000000-0000-4000-9c00-000000000004'), true);
+
+-- Records written from email are ordinary records: the same triggers ran, so
+-- they carry a responsible recruiter and appear in the timeline like any other.
+select test.check('decisions', 'AN AUTOMATIC RECORD CARRIES A RESPONSIBLE RECRUITER',
+  (select responsible_recruiter_id is not null from public.interviews
+    where id = '00000000-0000-4000-9200-000000000031'), true);
+
+select test.check('decisions', 'AN AUTOMATIC RECORD APPEARS IN THE TIMELINE',
+  (select count(*) > 0 from public.marketing_activities
+    where interview_id = '00000000-0000-4000-9200-000000000031'), true);
+
+select test.check('decisions', 'an automatic record counts in the daily report',
+  (select interviews from public.daily_report_metrics(
+     (select responsible_recruiter_id from public.interviews
+       where id = '00000000-0000-4000-9200-000000000031'),
+     (select (scheduled_at at time zone 'UTC')::date from public.interviews
+       where id = '00000000-0000-4000-9200-000000000031'))) > 0, true);
+
+-- A proposal still waiting is not a record and counts nowhere.
+select test.check('decisions', 'A PROPOSAL IN REVIEW IS NOT A CRM RECORD',
+  (select count(*) from public.interviews i
+     join public.intelligence_review_items d on d.created_interview_id = i.id
+    where d.status in ('open', 'in_review')), 0::bigint);
+
+-- ---------------------------------------------------------------------------
+-- SECTION 54 — Audit
+--
+-- Asserted against a decision made HERE, not against whatever the seed left
+-- behind: "some audit row exists" is satisfied by history and would stay green
+-- with the trigger removed. Each check below names the row it just wrote.
+-- ---------------------------------------------------------------------------
+do $$
+declare
+  c_unit constant uuid := '00000000-0000-4000-9000-000000000001';
+  v_interview uuid;
+  v_item      uuid;
+begin
+  select i.id into v_interview
+    from public.interviews i
+   where i.business_unit_id = c_unit
+   limit 1;
+
+  delete from public.intelligence_review_items where idempotency_key = 'test:audit';
+  insert into public.intelligence_review_items
+    (business_unit_id, intelligence_run_id, email_message_id, event_type,
+     outcome, status, proposed_data, explanation, idempotency_key)
+  values (c_unit,
+          '00000000-0000-4000-9b00-000000000001',
+          '00000000-0000-4000-9800-000000000001',
+          'interview', 'review_required', 'open', '{}'::jsonb,
+          'Held because the message states a time with no time zone.',
+          'test:audit')
+  returning id into v_item;
+
+  insert into test.results (section, name, passed, detail)
+  select 'decisions', 'A NEW DECISION IS CAPTURED IN THE AUDIT LOG', c > 0,
+         'audit rows: ' || c
+    from (select count(*) as c from audit.audit_logs
+           where entity_type = 'intelligence_review_items'
+             and entity_id = v_item and action = 'insert') t;
+
+  update public.intelligence_review_items
+     set status = 'approved',
+         reviewed_by = '00000000-0000-4000-8000-000000000002',
+         reviewed_at = now(),
+         created_interview_id = v_interview
+   where id = v_item;
+
+  insert into test.results (section, name, passed, detail)
+  select 'decisions', 'AN APPROVAL IS CAPTURED IN THE AUDIT LOG', c > 0,
+         'audit rows: ' || c
+    from (select count(*) as c from audit.audit_logs
+           where entity_type = 'intelligence_review_items'
+             and entity_id = v_item and action = 'update'
+             and 'status' = any(changed_fields)) t;
+
+  -- The explanation quotes the email. It reached the table; it must not have
+  -- reached the log.
+  insert into test.results (section, name, passed, detail)
+  select 'decisions', 'THE EXPLANATION WAS REDACTED ON THE WAY TO THE LOG', c = 0,
+         'unredacted rows: ' || c
+    from (select count(*) as c from audit.audit_logs
+           where entity_type = 'intelligence_review_items'
+             and entity_id = v_item
+             and coalesce(new_data ->> 'explanation', '[redacted]') <> '[redacted]') t;
+end $$;
+
+select test.check('decisions', 'decisions are captured in the audit log',
+  (select count(*) > 0 from audit.audit_logs
+    where entity_type = 'intelligence_review_items' and action = 'insert'), true);
+
+select test.check('decisions', 'NO PROPOSED CONTENT REACHES THE AUDIT LOG',
+  (select count(*) from audit.audit_logs
+    where entity_type = 'intelligence_review_items'
+      and coalesce(new_data ->> 'explanation', '[redacted]') <> '[redacted]'), 0::bigint);
+
+-- ---------------------------------------------------------------------------
+-- SECTION 55 — The build boundary
+-- ---------------------------------------------------------------------------
+select test.check('decisions', 'NO TRIGGER ON DECISIONS WRITES TO A CRM TABLE',
+  (select count(*) from pg_trigger tg
+     join pg_class c on c.oid = tg.tgrelid
+     join pg_proc p on p.oid = tg.tgfoid
+    where c.relname = 'intelligence_review_items'
+      and not tg.tgisinternal
+      and p.prosrc ~* 'insert into public\.(candidates|applications|interviews|assessments|marketing_activities|notifications)'),
+  0::bigint);
+
+-- `public.candidates` records provenance in `created_source` / `created_source_id`,
+-- not in the `source_type` / `source_reference` pair the child records use. Build
+-- 7B never creates a candidate: the decision engine can only propose a match to a
+-- candidate that already exists, so no candidate row may carry an email origin.
+select test.check('decisions', 'NO CANDIDATE WAS CREATED FROM AN EMAIL',
+  (select count(*) from public.candidates where created_source = 'email_event'), 0::bigint);
+
+-- And the review table has no column that could ever point at a created candidate,
+-- so there is no path by which an approval records having made one.
+select test.check('decisions', 'THE REVIEW TABLE CANNOT RECORD A CREATED CANDIDATE',
+  (select count(*) from information_schema.columns
+    where table_schema = 'public' and table_name = 'intelligence_review_items'
+      and column_name like 'created_candidate%'), 0::bigint);

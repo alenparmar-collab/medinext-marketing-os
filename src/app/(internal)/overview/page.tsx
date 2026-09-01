@@ -10,6 +10,7 @@ import { MarketingStatusBadge } from '@/components/patterns/status-badge';
 import { EmptyState } from '@/components/patterns/states';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { getProposalActivity } from '@/server/modules/decisions/queries';
 import {
   DAILY_REPORT_METRICS,
   DAILY_REPORT_STATUS_META,
@@ -25,9 +26,11 @@ export const metadata: Metadata = { title: 'Overview' };
  */
 export default async function OverviewPage() {
   const actor = await requireInternal();
-  const [metrics, attention] = await Promise.all([
+  const [metrics, attention, proposals] = await Promise.all([
     getOverviewMetrics(actor.userId),
     getAttentionQueue(actor.userId),
+    // RLS-filtered: a caller without proposal.review gets zeros, not a peek.
+    can(actor, 'proposal.review') ? getProposalActivity() : Promise.resolve(null),
   ]);
 
   const nothingPending =
@@ -121,6 +124,52 @@ export default async function OverviewPage() {
                 Counted from your records. You are never asked to type these in.
               </p>
             </div>
+          </CardBody>
+        </Card>
+      ) : null}
+
+      {/*
+        What the pipeline did, kept separate from what people did. "How much
+        did the machine do on its own" is the question this answers, and
+        blending the two would make it unanswerable.
+      */}
+      {proposals ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>From email, today</CardTitle>
+            <Link
+              href="/proposals"
+              className="text-[13px] text-[var(--color-accent-600)] hover:underline"
+            >
+              {proposals.openCount} waiting
+            </Link>
+          </CardHeader>
+          <CardBody>
+            <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              {[
+                { label: 'Written automatically', value: proposals.autoApprovedToday },
+                { label: 'Approved by a person', value: proposals.humanApprovedToday },
+                { label: 'Sent for review', value: proposals.reviewRequiredToday },
+                { label: 'Not actionable', value: proposals.ignoredToday },
+              ].map((tile) => (
+                <div
+                  key={tile.label}
+                  className="rounded-[var(--radius-sm)] border border-[var(--border-subtle)] px-3 py-2.5"
+                >
+                  <dt className="text-[11px] font-medium uppercase tracking-[0.08em] text-[var(--text-muted)]">
+                    {tile.label}
+                  </dt>
+                  <dd className="tabular mt-1 text-[22px] font-semibold leading-none text-[var(--text-primary)]">
+                    {tile.value}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+            <p className="mt-3 text-[12px] text-[var(--text-muted)]">
+              Records written from email count in the daily report like any other, because they are
+              created by the same commands. Anything still waiting is not a record yet and counts
+              nowhere.
+            </p>
           </CardBody>
         </Card>
       ) : null}

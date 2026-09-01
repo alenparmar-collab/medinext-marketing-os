@@ -13,6 +13,10 @@ export type ErrorCode =
   | 'CONFLICT'
   | 'PRECONDITION_FAILED'
   | 'RATE_LIMITED'
+  // Something was written and the bookkeeping that follows it was not. Distinct
+  // from INTERNAL because the honest instruction to the person is the opposite:
+  // do NOT simply try again.
+  | 'PARTIAL_FAILURE'
   | 'INTERNAL';
 
 export class AppError extends Error {
@@ -35,6 +39,8 @@ export const USER_FACING_MESSAGE: Record<ErrorCode, string> = {
   CONFLICT: 'That change conflicts with existing data.',
   PRECONDITION_FAILED: 'That action is not available in the record’s current state.',
   RATE_LIMITED: 'Too many attempts. Please wait a moment and try again.',
+  PARTIAL_FAILURE:
+    'Part of that action completed. Check the record before trying again — repeating it may create a duplicate.',
   INTERNAL: 'Something went wrong on our side. Please try again.',
 };
 

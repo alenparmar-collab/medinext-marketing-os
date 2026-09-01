@@ -8,6 +8,7 @@ import { OpenAiIntelligenceProvider, openAiApiKey } from './providers/openai';
 import { FixtureIntelligenceProvider, fixtureInterpretation } from './providers/fixture';
 import type { EmailIntelligenceProvider } from './providers/types';
 import { processEmailForIntelligence, type ProcessResult } from './processing';
+import { evaluateIntelligenceRun } from '@/server/modules/decisions/pipeline';
 
 /**
  * The authorised entry point for interpretation.
@@ -50,10 +51,21 @@ export interface InterpretEmailInput {
  * stays readable beside the new one — which is what makes "the model changed
  * its mind after we upgraded it" an answerable question rather than a rumour.
  */
+export interface InterpretOutcome extends ProcessResult {
+  /** Set when the reading produced a conclusion the decision layer acted on. */
+  decision: {
+    reviewItemId: string;
+    outcome: string;
+    status: string;
+    createdRecordId: string | null;
+    createdRecordKind: string | null;
+  } | null;
+}
+
 export async function interpretEmail(
   input: InterpretEmailInput,
   actor: ActorContext,
-): Promise<ProcessResult> {
+): Promise<InterpretOutcome> {
   const supabase = await createServerSupabase();
 
   // RLS decides whether this caller may see the email at all. Checked here,
@@ -87,7 +99,7 @@ export async function interpretEmail(
     );
   }
 
-  return withServiceRole(
+  const result = await withServiceRole(
     actor,
     `Interpret email ${input.emailMessageId} with ${provider.kind}/${provider.model}`,
     async (db) => {
@@ -115,4 +127,38 @@ export async function interpretEmail(
       }
     },
   );
+
+  // A reading that produced a conclusion goes straight to the decision layer.
+  // Deliberately AFTER the interpretation transaction rather than inside it: a
+  // decision that fails must not lose the reading, which cost a provider call
+  // and is evidence in its own right.
+  if (result.status !== 'completed' && result.status !== 'review_required') {
+    return { ...result, decision: null };
+  }
+
+  try {
+    const decision = await evaluateIntelligenceRun(result.runId, actor);
+    return {
+      ...result,
+      decision: {
+        reviewItemId: decision.reviewItemId,
+        outcome: decision.outcome,
+        status: decision.status,
+        createdRecordId: decision.createdRecordId,
+        createdRecordKind: decision.createdRecordKind,
+      },
+    };
+  } catch (cause) {
+    // The reading stands; the decision can be retried. Reported rather than
+    // swallowed, so the caller can say what did and did not happen.
+    console.error(
+      JSON.stringify({
+        level: 'error',
+        action: 'intelligence.evaluate',
+        runId: result.runId,
+        detail: cause instanceof Error ? cause.message : 'unknown error',
+      }),
+    );
+    return { ...result, decision: null };
+  }
 }

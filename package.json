@@ -12,6 +12,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "db:test": "./scripts/db-test.sh",
+    "db:concurrency": "./scripts/db-concurrency-test.sh",
     "db:reset": "./scripts/db-reset.sh",
     "db:types": "supabase gen types typescript --local --schema public > src/types/database.ts",
     "verify": "npm run typecheck && npm run lint && npm run test && npm run db:test"

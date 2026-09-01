@@ -2,6 +2,11 @@ import 'server-only';
 import { createServerSupabase } from '@/lib/supabase/server';
 import { AppError } from '@/server/auth/errors';
 import type { ActorContext } from '@/server/auth/actor';
+import {
+  MANUAL_PROVENANCE,
+  provenanceColumns,
+  type CommandProvenance,
+} from '@/server/modules/provenance';
 import type { InterviewRow } from '@/types/database';
 import type {
   InterviewCreateInput,
@@ -40,9 +45,11 @@ async function resolveApplicationContext(
  * schedule-history row and the candidate's notification — all in database
  * triggers, so this function only has to make the record.
  */
+/** See createApplication: `provenance` defaults to manual and is unchanged for existing callers. */
 export async function createInterview(
   input: InterviewCreateInput,
   actor: ActorContext,
+  provenance: CommandProvenance = MANUAL_PROVENANCE,
 ): Promise<{ id: string }> {
   const supabase = await createServerSupabase();
   const { candidateId, businessUnitId } = await resolveApplicationContext(input.applicationId);
@@ -61,10 +68,7 @@ export async function createInterview(
       interviewer_email: input.interviewerEmail ?? null,
       status: input.status,
       notes: input.notes ?? null,
-      source_type: 'manual',
-      // A person recorded this, so a person has verified it.
-      verified_at: new Date().toISOString(),
-      verified_by: actor.userId,
+      ...provenanceColumns(provenance, actor.userId),
       created_by: actor.userId,
       updated_by: actor.userId,
     })

@@ -4,7 +4,7 @@ Marketing operations platform for candidate marketing. Replaces an Excel-based
 workflow with an auditable system, and gives each candidate a portal showing
 only their own information.
 
-**Current stage: Build 7A — email interpretation.** Interviews and
+**Current stage: Build 7B — decisions, review and safe automation.** Interviews and
 assessments now have full scheduling and outcome screens; daily reports exist
 and their figures are **counted from the records rather than typed in**; a
 review queue surfaces records that need a human decision, in neutral language
@@ -17,8 +17,11 @@ recruiters' own reports wrong. Build 6 then connected a marketing mailbox and
 began preserving what arrives — and stops there deliberately: nothing read from
 an email creates or changes a candidate, application, interview or assessment.
 Build 7A then added the interpretation layer: a model reads an email and
-records what it made of it, as a **proposal**. It still changes nothing — acting
-on a proposal is Build 7B.
+records what it made of it, as a **proposal**. Build 7B decides what to do with
+that proposal: a deterministic server-side engine either writes the record,
+sends it to a person, or ignores it — and every write goes through the same
+command a recruiter's form calls. **AI proposes. The server decides. RLS remains
+the final boundary.**
 
 ---
 
@@ -83,7 +86,11 @@ on a proposal is Build 7B.
 | Model interpretation of email, stored as a versioned proposal | Done |
 | Deterministic candidate matching, never by name alone | Done |
 | Schema-constrained output with server-side validation | Done |
-| Acting on a proposal — decision, review, CRM mutation | Not built — Build 7B |
+| Deterministic decision engine: auto-approve, review, or ignore | Done |
+| Proposal review queue with reasons, priority and edit-then-approve | Done |
+| CRM writes through the existing commands, as the acting user | Done |
+| Automatic records marked unverified, naming the reading they came from | Done |
+| Idempotency per email and event type, and per approval | Done |
 | Recruiter workspace ("your day so far") and manager unit workspace | Done |
 | Email ingestion, AI, payments, sales, WhatsApp, mobile | Out of scope |
 
@@ -405,7 +412,7 @@ policies; it exercises them.
 npm run db:test
 ```
 
-382 assertions covering: anonymous access, role resolution, internal scope,
+423 assertions covering: anonymous access, role resolution, internal scope,
 cross-tenant isolation, candidate isolation in both directions on candidates,
 applications, activities, interviews, assessments, notifications, documents and
 the timeline, internal-note isolation, storage-object authorization, write
@@ -430,7 +437,18 @@ layer — candidates reading nothing even when a proposal names them, readings
 being unforgeable and uneditable through the API, reprocessing adding a version
 rather than replacing one, one reading at a time per email, a cross-tenant
 proposal being unstorable, interpreted content staying out of the audit log,
-and no function anywhere turning a reading into a record.
+and no function anywhere turning a reading into a record; and the decision
+layer — the queue needing an explicit capability, one tenant's decisions staying
+out of another's queue, decisions being uninsertable and undeletable through the
+API, one decision per email and event type with a key that is not a timestamp,
+an approval having to name the record it created, a decided proposal being
+unreopenable, an auto-approval being unable to carry a reason to hesitate, a
+match to another tenant's candidate being unstorable, approval requiring the
+permission for the record being created and not merely queue access, an
+automatic record being unverified and a human-approved one verified, the
+original proposal surviving a correction, a proposal in review not counting as a
+CRM event, and every decision reaching the audit log with its content
+redacted.
 
 Where an assertion once hardcoded a count from the seed, it now compares the
 RLS-filtered result against a superuser query implementing the intended rule.
@@ -448,7 +466,7 @@ cannot download candidate B's file" is an assertion, not a claim.
 bash scripts/db-mutation-test.sh
 ```
 
-Thirty-three probes, each deliberately breaking one guarantee and asserting that a
+Forty probes, each deliberately breaking one guarantee and asserting that a
 named assertion catches it: candidate isolation on candidates, applications,
 interviews, assessments, notifications and stored files; internal notes staying
 out of the portal; notification idempotency; cross-candidate attachment;
@@ -467,13 +485,35 @@ staying out of the audit log; and ingested evidence being uneditable through the
 API; candidates having no route into interpretation results; a reading being
 uneditable; reprocessing adding rather than replacing; one reading at a time
 per email; a proposal never naming another tenant's candidate; and interpreted
-content staying out of the audit log.
+content staying out of the audit log; the proposal queue needing an explicit
+capability; one tenant's decisions staying out of another's queue; one decision
+per email and event type; a decision never matching a candidate in another
+tenant; approval needing the permission for the record it creates; every
+decision reaching the audit log; and decided content staying out of it.
 
 A green suite that cannot go red is worthless. Several of these probes have
 failed on first run, and every time they exposed a weak *test* rather than a
-weak policy — most recently a section that was not re-runnable, so the second
-pass aborted and silently dropped its assertions. Run this after any policy
+weak policy — and in Build 7B two of the new probes failed on
+first run for exactly that reason: one assertion was satisfied by a constraint
+rather than by the authorization gate it was written for, and another was
+satisfied by audit rows the seed had already written, so removing the audit
+trigger changed nothing it looked at. Both were rewritten to create their own
+fixture and assert against it. Run this after any policy
 change.
+
+**One authorization condition, broken on purpose — Build 7B.** Removing the
+capability and tenant conditions from the proposal queue's SELECT policy, so it
+reads only `util.is_internal()`, turned three assertions red:
+
+```
+ decisions | AN UNAUTHORIZED RECRUITER READS NO PROPOSAL            | expected 0, got 5
+ decisions | AUTHORIZED MANAGER READS THEIR UNIT'S PROPOSALS        | expected 4, got 5
+ decisions | CROSS-TENANT: EU MANAGER CANNOT READ THE APAC PROPOSAL | expected 0, got 1
+```
+
+The middle one is the useful one: the manager's own count went *up*, which is
+how a leak looks from inside the account that benefits from it. Restoring the
+two conditions returned the suite to 423/423.
 
 **One authorization condition, broken on purpose.** Build 5 asks for this
 explicitly. Rewriting `daily_reports_select_own` to read
@@ -493,13 +533,29 @@ assertions went red immediately:
 
 Restoring `recruiter_id = (select auth.uid())` returned the suite to 253/253.
 
+**Concurrency, tested concurrently:**
+
+```bash
+npm run db:concurrency
+```
+
+Run numbering used to be `select max(run_number) + 1`, which is a read-then-write
+race. It is now allocated under a transaction-scoped advisory lock keyed on the
+email. The script releases a dozen real psql sessions from a common starting
+gate and asserts that all of them get their own number; that when they race to
+start an *active* run instead, exactly one wins and every loser is refused by
+the one-active-run index rather than by a duplicate number; and — the part that
+makes the first two worth reading — that restoring the unguarded allocator makes
+the same race fail. A concurrency test that cannot detect the bug it was written
+for is decoration.
+
 ### 2. Unit tests
 
 ```bash
 npm test
 ```
 
-275 assertions over validation schemas, the config/SQL sync, the Build 5 and 5.1
+341 assertions over validation schemas, the config/SQL sync, the Build 5 and 5.1
 guarantees, the email layer, and the interpretation pipeline — the latter run
 for real against an in-memory database and a fixture provider, across twenty
 fictional email fixtures including a prompt-injection attempt — including the ingestion service run for real
@@ -514,7 +570,13 @@ never appears in a stored failure reason, and that the email modules import no
 CRM module and contain no classification or matching code; that a name alone
 never proposes a candidate and a shared name proposes nobody; that malformed
 model output is discarded rather than stored; and that no candidate record is
-ever sent to the provider.
+ever sent to the provider; that confidence alone never decides anything, that a
+rejection is never written automatically however certain the reading, that a
+time with no stated zone is never guessed at, that a redelivered email produces
+one decision and one record, that a second approval is refused, that a failed
+CRM write leaves the proposal open rather than approved, and that the privileged
+client is used for bookkeeping only — never for the CRM write, which always runs
+as the acting user.
 
 ### 3. HTTP smoke test
 
@@ -558,6 +620,7 @@ policies are tested; the round trip is not.
 | `npm run lint` | ESLint, including the architectural boundaries |
 | `npm test` | Unit tests |
 | `npm run db:test` | Apply migrations + seed to a scratch DB and run the RLS suite |
+| `npm run db:concurrency` | Race real parallel sessions against the run-number allocator |
 | `npm run db:reset` | Rebuild a local scratch DB from migrations + seed |
 | `npm run db:types` | Regenerate `src/types/database.ts` from a Supabase project |
 | `npm run verify` | typecheck + lint + unit tests + database tests |
@@ -797,9 +860,31 @@ sequence since.
     the figures. If a correction is genuinely needed, the current answer is a
     review item recording what changed, not an edit to the frozen snapshot.
 
+26. **Automation is narrow on purpose.** Only three event types can be written
+    without a person — application, interview, assessment — and only when every
+    condition in "AI proposes. The server decides." holds. A rejection is never
+    automatic. Everything else reaches a reviewer, which is the correct
+    behaviour for a first automation pass and will look conservative in the
+    numbers.
+27. **The decision engine's thresholds are operational choices.** 0.90 and 0.60
+    are starting points chosen for caution, not measured accuracy. They live in
+    one file and should be revisited against real review outcomes once there
+    are any.
+28. **The CRM write and its bookkeeping are not one transaction.** They cannot
+    be: one runs as the user and one as the service role. The gap is handled
+    (one retry, then an error naming the created record by id) rather than
+    closed. A reviewer who hits it must not simply try again.
+29. **Duplicate detection compares what is on file, not what is true.** An
+    interview the model proposes at a time that matches nothing on record looks
+    new, even if it is a reschedule the recruiter has not entered. That case is
+    sent to review with a "possible reschedule" reason rather than guessed at.
+30. **Nothing runs on its own.** Interpretation and decision are both triggered
+    by a request. There is no queue, no scheduler, and no polling — so an email
+    that arrives at 2am is decided when somebody asks for it to be, not before.
+
 ---
 
-## The two rules these builds exist to enforce
+## The rules these builds exist to enforce
 
 ### 1. A daily report never accepts a number
 
@@ -926,15 +1011,16 @@ Build 7A adds interpretation:
 ```
 EMAIL → MODEL → STRUCTURED RESULT → VALIDATION → STORED PROPOSAL
                                                        ↓
-                                              (Build 7B — not built)
+                                                   (Build 7B)
                                               decision · review · CRM mutation
 ```
 
 A reading proposes a classification, some extracted fields, and possibly a
-candidate. It changes nothing. There is no foreign key from a CRM table to a
-reading, no trigger on the readings table that writes to one, no function
-anywhere that turns a reading into a record, and the intelligence module
-imports no CRM module — each of those is a separate assertion.
+candidate. It changes nothing by itself. There is no foreign key from a CRM
+table to a reading, no trigger on the readings table that writes to one, no
+function anywhere that turns a reading into a record, and the intelligence
+module imports no CRM module — each of those is a separate assertion. What a
+reading *can* do is be decided on, which is rule 5.
 
 **The model is not trusted with identity.** It never returns a candidate id,
 because the schema it answers in has no field for one. It reports the
@@ -989,6 +1075,92 @@ content, or any candidate record — matching happens on the server after the
 model answers, so a third party is never handed a roster of the people this
 company is marketing.
 
+### 5. AI proposes. The server decides.
+
+Build 7B is the step where a reading can become a record, and the whole design
+is about keeping those two things separate:
+
+```
+PROPOSAL → VALIDATION → DECISION ENGINE → auto-approve · review · ignore
+                                              ↓
+                                    EXISTING CRM COMMAND (as the user)
+                                              ↓
+                              audit · timeline · notification · daily report
+```
+
+**The engine is pure and deterministic.** `decide()` takes the reading, the
+candidate's current CRM state and the actor's permissions, and returns an
+outcome, a list of structured reason codes and a priority. It performs no I/O,
+calls no model, and reads no clock it was not handed — which is why every rule
+below is a unit test rather than a claim.
+
+**Confidence alone never decides anything.** High confidence is necessary and
+nowhere near sufficient. A record is written without a person only when *all*
+of these hold: the classification is confident, the candidate match is
+confident and came from something better than a name, every field the record
+needs is present, nothing on file conflicts with it, the email is recent, the
+sender is consistent with the company named, and the person who triggered it
+could have created the record by hand. Anything else goes to a person.
+
+**A rejection is never automatic.** It is the one outcome here that reaches the
+candidate and cannot be taken back, so it is excluded from automation
+regardless of how certain the reading is. There is a test that a perfect,
+maximally confident rejection still stops for a human.
+
+**A time with no zone is never guessed.** "3 PM" is not a time. If the message
+names no zone and the extraction supplies none, the proposal is held for review
+rather than resolved against the server's clock, the candidate's location, or
+anything else the system would be inventing.
+
+**The write goes through the existing command.** Not one insert lives in the
+decision layer. `createInterview` is the same function the recruiter's form
+calls, with the same validation, the same RLS, and the same triggers that write
+history, activities, notifications and the daily report — which is how an
+interview created from an email appears in the timeline without any of those
+knowing this pipeline exists. Commands gained one optional parameter,
+`provenance`, and nothing else.
+
+**Automation has no authority of its own.** Every CRM write runs as the person
+who triggered it, through their own RLS-scoped client. The service role is used
+for exactly two things — recording the decision and recording the approval —
+because a person who could insert a decision row could invent an approval for a
+record to hang from. If the actor could not create the record by hand, the
+engine says so before anything is attempted, and the database refuses to record
+an approval by someone lacking the permission for the record being created.
+
+**An automatic record says so.** `source_type = 'email_event'`, a
+`source_reference` naming the reading, and `verified_at` left null. A record a
+person approved is verified; one nobody looked at is not, and every screen that
+shows provenance says which. Nothing here pretends to have been typed by hand.
+
+**A correction is kept beside the proposal, never over it.** Three values stay
+legible on the review item: what the model said, what the reviewer changed, and
+what was written. Review history is never deleted and a decided proposal cannot
+be reopened — a different answer is a new reading, not an edit of an old one.
+
+**Idempotency is a constraint, not a convention.** One decision per (business
+unit, email, event type), enforced by a unique index rather than by a
+timestamp. A redelivered email, a second reading and a retried request all
+converge on the same row; approving twice is refused; and reprocessing an email
+that was already acted on writes nothing new.
+
+**When half of it fails.** The CRM write and the bookkeeping that follows it
+are two writes with no transaction spanning them, because the first goes
+through the user's client and the second through the service role. If the CRM
+write fails, the item stays open and retryable and is never marked approved. If
+it succeeds and the bookkeeping fails twice, the caller is told *what was
+created, by id* — because a reviewer told only "it failed" is the person most
+likely to create it a second time.
+
+**What Build 7B still does not do.** It sends no email, no WhatsApp and no SMS;
+notifications are in-app only. It creates no candidate from an unknown sender.
+It runs no background queue and polls nothing. It scores no company's
+trustworthiness — where a sender does not match the company named, the wording
+is factual and neutral, because the ordinary explanation is a recruitment
+agency, not a fraud.
+
+---
+
 ---
 
 ## What was tested with mocks, and what was not
@@ -997,7 +1169,10 @@ This distinction matters more here than anywhere else in the codebase, because
 the parts that cannot be tested locally are the parts that touch somebody's real
 mailbox.
 
-**Executed:** the interpretation pipeline end to end against a fixture
+**Executed:** the decision engine in full, as a pure function, one rule at a
+time; the decision pipeline end to end against an in-memory database with the
+CRM commands stubbed, including idempotency, double approval, correction, and
+both halves of a partial failure; the interpretation pipeline end to end against a fixture
 provider — classification, validation, candidate matching, pre-filtering,
 failure and retry, prompt injection — across twenty fictional email fixtures;
 normalisation against recorded Gmail payload shapes; the ingestion
@@ -1027,30 +1202,32 @@ message budget.
 
 ## Next build
 
-**Build 7B — decision, review, and safe mutation.** Everything is now in place
-for it and nothing about it has been started:
+Nothing is in progress. Build 7B is the last step that was scoped, and the
+system is deliberately left **AI-assisted, not AI-autonomous**.
 
-- a decision step that turns a `completed` reading into a proposed business
-  event, with an authorised human in the loop for anything short of certain;
-- `review_required` readings into the review queue built in Build 5, in the
-  neutral language it already enforces;
-- mutation through the existing commands, so an interview created from an email
-  goes through the same validation, audit and attribution as one typed by a
-  recruiter — including `responsible_recruiter_id`, which Build 5.1 made
-  correct for exactly this case;
-- idempotency, so re-reading the same email does not create a second interview.
+What is *not* built, and was not attempted:
 
-The four separations this codebase has held are what make that safe to attempt:
-source data apart from interpretation apart from verified records; ownership
-apart from authorship; evidence apart from instruction; and now proposal apart
-from decision.
+- **A background queue or scheduled sync.** Interpretation and decision are
+  both triggered by a request today. Nothing polls Gmail.
+- **Any outbound message.** No email, WhatsApp, SMS or campaign of any kind.
+  Notifications are in-app only.
+- **Candidate creation from an unknown sender.** An email about somebody this
+  system has never heard of proposes nobody.
+- **An analytics platform.** The daily report counts approved records because
+  they are ordinary records; there is no second reporting system for
+  automation, and a proposal still in review counts as nothing.
+- **A live-provider verification pass** — still the first thing to do once
+  credentials exist, for both Google and OpenAI.
 
-Also still outstanding, independent of 7B:
+Also still outstanding, and unchanged by this build:
 
 - **Excel migration** (`docs/architecture/13-excel-migration.md`) — the
   `ingest` and `staging` schemas and the historical importer.
 - **Portal invitations and rate limiting** — the remaining gap in account
   lifecycle.
-- **Scheduled or push-based mailbox sync**, and a batch interpretation queue.
-- **A live-provider verification pass** — the first thing to do once
-  credentials exist, for both Google and OpenAI.
+
+The five separations this codebase has held are what made each build safe to
+attempt on top of the last: source data apart from interpretation apart from
+verified records; ownership apart from authorship; evidence apart from
+instruction; proposal apart from decision; and decision apart from the
+authority to act on it.

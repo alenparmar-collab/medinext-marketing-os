@@ -42,6 +42,11 @@ import type {
   IntelligenceEventType,
   IntelligenceProviderKind,
 } from '@/config/statuses';
+import type {
+  DecisionOutcome,
+  DecisionReasonCode,
+  ProposalReviewStatus,
+} from '@/config/decisions';
 import type { RoleCode } from '@/config/permissions';
 
 export type SourceKind = 'manual' | 'seed' | 'excel_import' | 'email_event' | 'system' | 'api';
@@ -537,6 +542,41 @@ export type EmailIntelligenceRunRow = {
   updated_at: string;
 }
 
+/**
+ * One decision about one proposed event.
+ *
+ * `proposed_data` is what the model said, `corrected_data` is what a person
+ * changed, `final_data` is what was written. All three are kept: overwriting
+ * the first would destroy the record of what the model actually proposed.
+ */
+export type IntelligenceReviewItemRow = {
+  id: string;
+  business_unit_id: string;
+  intelligence_run_id: string;
+  email_message_id: string;
+  event_type: IntelligenceEventType;
+  outcome: DecisionOutcome;
+  status: ProposalReviewStatus;
+  priority: ReviewItemPriority;
+  reason_codes: DecisionReasonCode[];
+  explanation: string | null;
+  proposed_candidate_id: string | null;
+  proposed_data: Record<string, unknown>;
+  candidate_match_confidence: number | null;
+  event_confidence: number | null;
+  corrected_data: Record<string, unknown> | null;
+  final_data: Record<string, unknown> | null;
+  reviewed_by: string | null;
+  reviewed_at: string | null;
+  decision_notes: string | null;
+  created_application_id: string | null;
+  created_interview_id: string | null;
+  created_assessment_id: string | null;
+  idempotency_key: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export type MailboxCredentialRow = {
   mailbox_id: string;
   refresh_token_encrypted: string;
@@ -595,6 +635,7 @@ export type Database = {
       email_attachments: TableDef<EmailAttachmentRow>;
       mailbox_sync_runs: TableDef<MailboxSyncRunRow>;
       email_intelligence_runs: TableDef<EmailIntelligenceRunRow>;
+      intelligence_review_items: TableDef<IntelligenceReviewItemRow>;
     };
     Views: { [_ in never]: never };
     Functions: {

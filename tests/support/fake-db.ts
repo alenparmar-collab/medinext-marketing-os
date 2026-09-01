@@ -19,6 +19,10 @@ const UNIQUE_KEYS: { table: string; columns: string[] }[] = [
   { table: 'email_messages', columns: ['mailbox_id', 'provider_message_id'] },
   { table: 'email_threads', columns: ['mailbox_id', 'provider_thread_id'] },
   { table: 'email_attachments', columns: ['message_id', 'provider_attachment_id'] },
+  // The decision queue's idempotency guarantee. Modelled here for the same
+  // reason as the others: a fake that let a duplicate decision through would
+  // make the pipeline tests pass for the wrong reason.
+  { table: 'intelligence_review_items', columns: ['business_unit_id', 'idempotency_key'] },
 ];
 
 export class FakeDb {

@@ -42,6 +42,8 @@ export const PERMISSIONS = [
   'email.view',
   'intelligence.view',
   'intelligence.run',
+  'proposal.review',
+  'proposal.approve',
   'marketing_period.view',
   'marketing_period.manage',
   'document.view_internal',

@@ -213,6 +213,34 @@ probe "interpreted content staying out of the audit log" \
   "@supabase/tests/mutations/intelligence_audit_unredacted.sql" \
   "NO INTERPRETED CONTENT REACHES THE AUDIT LOG"
 
+probe "the proposal queue needing an explicit capability" \
+  "@supabase/tests/mutations/decisions_review_authorization.sql" \
+  "AN UNAUTHORIZED RECRUITER READS NO PROPOSAL"
+
+probe "one tenant's decisions staying out of another's queue" \
+  "@supabase/tests/mutations/decisions_cross_tenant.sql" \
+  "CROSS-TENANT: EU MANAGER CANNOT READ THE APAC PROPOSAL"
+
+probe "one decision per email and event type" \
+  "@supabase/tests/mutations/decisions_duplicate.sql" \
+  "A SECOND DECISION FOR THE SAME EMAIL AND EVENT IS REFUSED"
+
+probe "a decision never matching a candidate in another tenant" \
+  "@supabase/tests/mutations/decisions_candidate_matching.sql" \
+  "A CROSS-TENANT CANDIDATE MATCH CANNOT BE STORED"
+
+probe "approval needing the permission for the record it creates" \
+  "@supabase/tests/mutations/decisions_approval_permission.sql" \
+  "A RECRUITER CANNOT APPROVE INTO A CRM RECORD"
+
+probe "every decision reaching the audit log" \
+  "@supabase/tests/mutations/decisions_audit_capture.sql" \
+  "AN APPROVAL IS CAPTURED IN THE AUDIT LOG"
+
+probe "decided content staying out of the audit log" \
+  "@supabase/tests/mutations/decisions_audit_unredacted.sql" \
+  "NO PROPOSED CONTENT REACHES THE AUDIT LOG"
+
 probe "cross-candidate attachment being structurally impossible" \
   "alter table public.interviews
      drop constraint interviews_application_id_candidate_id_fkey;

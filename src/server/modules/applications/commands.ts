@@ -4,6 +4,11 @@ import { AppError } from '@/server/auth/errors';
 import type { ActorContext } from '@/server/auth/actor';
 import type { ApplicationRow } from '@/types/database';
 import { resolveCandidateBusinessUnit } from '@/server/modules/candidates/tenancy';
+import {
+  MANUAL_PROVENANCE,
+  provenanceColumns,
+  type CommandProvenance,
+} from '@/server/modules/provenance';
 import type {
   ApplicationCreateInput,
   ApplicationStatusChangeInput,
@@ -19,9 +24,15 @@ import type {
  * so the aggregation source stays complete regardless of which code path — or
  * which future pipeline — performed the write.
  */
+/**
+ * `provenance` defaults to manual, so every existing caller is unchanged. The
+ * decision engine passes email provenance instead — same command, same
+ * validation, same RLS, same triggers, honest source columns.
+ */
 export async function createApplication(
   input: ApplicationCreateInput,
   actor: ActorContext,
+  provenance: CommandProvenance = MANUAL_PROVENANCE,
 ): Promise<{ id: string }> {
   const supabase = await createServerSupabase();
 
@@ -42,11 +53,9 @@ export async function createApplication(
       job_url: input.jobUrl ?? null,
       job_location: input.jobLocation ?? null,
       notes: input.notes ?? null,
-      source_type: 'manual',
-      // A human typed this, so a human has verified it. Records arriving from
-      // the future email pipeline will land unverified until someone accepts.
-      verified_at: new Date().toISOString(),
-      verified_by: actor.userId,
+      // Manual by default; a record written from an email says so, and says
+      // whether a person confirmed it.
+      ...provenanceColumns(provenance, actor.userId),
       created_by: actor.userId,
       updated_by: actor.userId,
     })

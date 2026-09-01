@@ -2,6 +2,11 @@ import 'server-only';
 import { createServerSupabase } from '@/lib/supabase/server';
 import { AppError } from '@/server/auth/errors';
 import type { ActorContext } from '@/server/auth/actor';
+import {
+  MANUAL_PROVENANCE,
+  provenanceColumns,
+  type CommandProvenance,
+} from '@/server/modules/provenance';
 import type { AssessmentRow } from '@/types/database';
 import { ASSESSMENT_STATUS_META } from '@/config/statuses';
 import type {
@@ -27,9 +32,11 @@ async function resolveApplicationContext(
   return { candidateId: data.candidate_id, businessUnitId: data.business_unit_id };
 }
 
+/** See createApplication: `provenance` defaults to manual and is unchanged for existing callers. */
 export async function createAssessment(
   input: AssessmentCreateInput,
   actor: ActorContext,
+  provenance: CommandProvenance = MANUAL_PROVENANCE,
 ): Promise<{ id: string }> {
   const supabase = await createServerSupabase();
   const { candidateId, businessUnitId } = await resolveApplicationContext(input.applicationId);
@@ -46,9 +53,7 @@ export async function createAssessment(
       deadline: input.deadline ? new Date(input.deadline).toISOString() : null,
       status: input.status,
       notes: input.notes ?? null,
-      source_type: 'manual',
-      verified_at: new Date().toISOString(),
-      verified_by: actor.userId,
+      ...provenanceColumns(provenance, actor.userId),
       created_by: actor.userId,
       updated_by: actor.userId,
     })
