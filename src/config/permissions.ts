@@ -40,6 +40,8 @@ export const PERMISSIONS = [
   'mailbox.view',
   'mailbox.manage',
   'email.view',
+  'intelligence.view',
+  'intelligence.run',
   'marketing_period.view',
   'marketing_period.manage',
   'document.view_internal',

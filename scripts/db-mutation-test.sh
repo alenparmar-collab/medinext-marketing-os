@@ -189,6 +189,30 @@ probe "ingested evidence being uneditable through the API" \
   "@supabase/tests/mutations/email_writable.sql" \
   "NOBODY CAN EDIT AN EMAIL THROUGH THE API"
 
+probe "candidates having no route into interpretation results" \
+  "@supabase/tests/mutations/intelligence_candidate_access.sql" \
+  "CANDIDATE CANNOT READ ANY INTERPRETATION"
+
+probe "a reading being uneditable through the API" \
+  "@supabase/tests/mutations/intelligence_writable.sql" \
+  "NOBODY CAN EDIT AN INTERPRETATION THROUGH THE API"
+
+probe "reprocessing adding a reading rather than replacing one" \
+  "@supabase/tests/mutations/intelligence_overwrite.sql" \
+  "REPROCESSING ADDS A READING RATHER THAN REPLACING ONE"
+
+probe "one reading at a time per email" \
+  "@supabase/tests/mutations/intelligence_concurrent.sql" \
+  "A SECOND READING CANNOT START WHILE ONE IS IN FLIGHT"
+
+probe "a proposal never naming another tenant's candidate" \
+  "@supabase/tests/mutations/intelligence_cross_tenant_proposal.sql" \
+  "A CROSS-TENANT CANDIDATE PROPOSAL CANNOT BE STORED"
+
+probe "interpreted content staying out of the audit log" \
+  "@supabase/tests/mutations/intelligence_audit_unredacted.sql" \
+  "NO INTERPRETED CONTENT REACHES THE AUDIT LOG"
+
 probe "cross-candidate attachment being structurally impossible" \
   "alter table public.interviews
      drop constraint interviews_application_id_candidate_id_fkey;

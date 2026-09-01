@@ -1499,7 +1499,8 @@ select test.check('structure', 'every business table carries business_unit_id',
      ('interviews'),('assessments'),('notifications'),
      ('daily_reports'),('review_items'),
      ('mailboxes'),('email_threads'),('email_messages'),
-     ('email_attachments'),('mailbox_sync_runs')) as t(tbl)
+     ('email_attachments'),('mailbox_sync_runs'),
+     ('email_intelligence_runs')) as t(tbl)
    where not exists (
      select 1 from information_schema.columns
       where table_schema='public' and table_name=t.tbl and column_name='business_unit_id'
@@ -1513,7 +1514,8 @@ select test.check('structure', 'every audited business table has the audit trigg
      ('interviews'),('assessments'),('notifications'),
      ('interview_schedule_history'),('daily_reports'),('review_items'),
      ('mailboxes'),('email_threads'),('email_messages'),
-     ('email_attachments'),('mailbox_sync_runs')) as t(tbl)
+     ('email_attachments'),('mailbox_sync_runs'),
+     ('email_intelligence_runs')) as t(tbl)
    where not exists (
      select 1 from pg_trigger tg
        join pg_class c on c.oid = tg.tgrelid
@@ -2465,3 +2467,365 @@ select test.check('email', 'no marketing activity cites an ingested message',
 select test.check('email', 'ingesting email created no notification',
   (select count(*) from public.notifications
     where entity_type in ('email_message', 'mailbox')), 0::bigint);
+
+-- ===========================================================================
+-- BUILD 7A — Email intelligence
+-- ===========================================================================
+
+-- ---------------------------------------------------------------------------
+-- SECTION 42 — Candidates see nothing, and cannot run anything ***critical***
+-- ---------------------------------------------------------------------------
+select test.check('intelligence', 'CANDIDATE CANNOT READ ANY INTERPRETATION',
+  test.count_as(:'PRIYA_USER', 'select count(*) from public.email_intelligence_runs'), 0::bigint);
+
+select test.check('intelligence', 'A SECOND CANDIDATE ALSO READS NO INTERPRETATION',
+  test.count_as(:'LUCIA_USER', 'select count(*) from public.email_intelligence_runs'), 0::bigint);
+
+-- The proposal names a candidate; that candidate still must not see it.
+select test.check('intelligence', 'A PROPOSED CANDIDATE CANNOT READ THEIR OWN PROPOSAL',
+  test.count_as(:'PRIYA_USER',
+    'select count(*) from public.email_intelligence_runs where proposed_candidate_id = '
+    || quote_literal(:'PRIYA')), 0::bigint);
+
+select test.check('intelligence', 'CANDIDATE CANNOT TRIGGER INTERPRETATION',
+  test.write_denied(:'PRIYA_USER',
+    'insert into public.email_intelligence_runs (business_unit_id, email_message_id, '
+    || 'provider, model, prompt_version) values ('
+    || quote_literal(:'EU_UNIT') || ', ''00000000-0000-4000-9800-000000000001'', '
+    || '''openai'', ''gpt-4o-mini'', ''email_intelligence_v1'')'), true);
+
+select test.check('intelligence', 'CANDIDATE CANNOT CHANGE A CONFIDENCE SCORE',
+  test.write_denied(:'PRIYA_USER',
+    'update public.email_intelligence_runs set event_confidence = 1 where id = '
+    || quote_literal('00000000-0000-4000-9b00-000000000003')), true);
+
+select test.check('intelligence', 'anonymous callers reach no interpretation',
+  test.count_anon('select count(*) from public.email_intelligence_runs'), -1::bigint);
+
+-- ---------------------------------------------------------------------------
+-- SECTION 43 — Internal authorization
+-- ---------------------------------------------------------------------------
+select test.check('intelligence', 'AN UNAUTHORIZED RECRUITER READS NO INTERPRETATION',
+  test.count_as(:'SALAS', 'select count(*) from public.email_intelligence_runs'), 0::bigint);
+
+select test.check('intelligence', 'AUTHORIZED MANAGER READS THEIR UNIT''S INTERPRETATIONS',
+  test.count_as(:'MANAGER', 'select count(*) from public.email_intelligence_runs'),
+  (select count(*) from public.email_intelligence_runs
+    where business_unit_id = :'EU_UNIT'::uuid));
+
+select test.check('intelligence', 'admin reads interpretations across units',
+  test.count_as(:'ADMIN', 'select count(*) from public.email_intelligence_runs'),
+  (select count(*) from public.email_intelligence_runs));
+
+-- Results are written by the interpretation service under the service role.
+-- Nothing reachable from a request may forge or edit one.
+select test.check('intelligence', 'NOBODY CAN FORGE AN INTERPRETATION THROUGH THE API',
+  test.write_denied(:'ADMIN',
+    'insert into public.email_intelligence_runs (business_unit_id, email_message_id, '
+    || 'provider, model, prompt_version, status, event_type, event_confidence, completed_at) '
+    || 'values (' || quote_literal(:'EU_UNIT')
+    || ', ''00000000-0000-4000-9800-000000000001'', ''openai'', ''forged'', ''v1'', '
+    || '''completed'', ''interview'', 1, now())'), true);
+
+-- Deliberately NOT a status change: the state-machine trigger would refuse
+-- that on its own, so such an assertion could not tell a missing write policy
+-- from a terminal state. Editing the summary and the confidence is refused
+-- only because there is no way to write this table through the API at all.
+select test.check('intelligence', 'NOBODY CAN EDIT AN INTERPRETATION THROUGH THE API',
+  test.write_denied(:'ADMIN',
+    'update public.email_intelligence_runs set summary = ''rewritten'', '
+    || 'event_confidence = 1 where id = '
+    || quote_literal('00000000-0000-4000-9b00-000000000003')), true);
+
+select test.check('intelligence', 'nobody can delete an interpretation through the API',
+  test.write_denied(:'ADMIN',
+    'delete from public.email_intelligence_runs where id = '
+    || quote_literal('00000000-0000-4000-9b00-000000000001')), true);
+
+-- ---------------------------------------------------------------------------
+-- SECTION 44 — Tenancy
+-- ---------------------------------------------------------------------------
+select test.check('intelligence', 'CROSS-TENANT: EU MANAGER CANNOT READ THE APAC INTERPRETATION',
+  test.count_as(:'MANAGER',
+    'select count(*) from public.email_intelligence_runs where id = '
+    || quote_literal('00000000-0000-4000-9b00-000000000006')), 0::bigint);
+
+-- A proposal naming a candidate from another unit is not merely refused by
+-- policy — the composite foreign key makes the row unstorable.
+do $$
+declare v_blocked boolean := false;
+begin
+  begin
+    insert into public.email_intelligence_runs
+      (business_unit_id, email_message_id, provider, model, prompt_version,
+       status, event_type, event_confidence, completed_at,
+       proposed_candidate_id, candidate_match_confidence)
+    values
+      ('00000000-0000-4000-9000-000000000001',
+       '00000000-0000-4000-9800-000000000001', 'fixture', 'x', 'v1',
+       'completed', 'interview', 0.99, now(),
+       -- Hiroshi belongs to APAC.
+       '00000000-0000-4000-a000-000000000006', 0.99);
+  exception when others then
+    v_blocked := true;
+  end;
+
+  insert into test.results (section, name, passed, detail)
+  values ('intelligence', 'A CROSS-TENANT CANDIDATE PROPOSAL CANNOT BE STORED',
+          v_blocked, case when v_blocked then 'ok' else 'the proposal was accepted' end);
+end $$;
+
+-- ---------------------------------------------------------------------------
+-- SECTION 45 — Versioning, retries and state
+-- ---------------------------------------------------------------------------
+select test.check('intelligence', 'REPROCESSING ADDS A READING RATHER THAN REPLACING ONE',
+  (select count(*) from public.email_intelligence_runs
+    where email_message_id = '00000000-0000-4000-9800-000000000003'), 2::bigint);
+
+select test.check('intelligence', 'the earlier reading kept its own conclusion',
+  (select event_confidence from public.email_intelligence_runs
+    where id = '00000000-0000-4000-9b00-000000000001'), 0.940::numeric);
+
+select test.check('intelligence', 'every reading records provider, model and prompt version',
+  (select count(*) from public.email_intelligence_runs
+    where provider is null or model is null or prompt_version is null), 0::bigint);
+
+select test.check('intelligence', 'a failed reading explains itself',
+  (select count(*) from public.email_intelligence_runs
+    where status = 'failed' and error_message is null), 0::bigint);
+
+select test.check('intelligence', 'a stored proposal always carries a confidence',
+  (select count(*) from public.email_intelligence_runs
+    where proposed_candidate_id is not null and candidate_match_confidence is null), 0::bigint);
+
+do $$
+declare
+  v_email   constant uuid := '00000000-0000-4000-9800-000000000001';
+  v_run     uuid;
+  v_second  uuid;
+  v_blocked boolean := false;
+  v_number  integer;
+begin
+  delete from public.email_intelligence_runs where email_message_id = v_email;
+
+  insert into public.email_intelligence_runs
+    (business_unit_id, email_message_id, provider, model, prompt_version, status)
+  values ('00000000-0000-4000-9000-000000000001', v_email, 'fixture', 'x', 'v1', 'pending')
+  returning id, run_number into v_run, v_number;
+
+  insert into test.results (section, name, passed, detail)
+  values ('intelligence', 'the database allocates the reading number',
+          v_number = 1, format('got %s', v_number));
+
+  -- Two runs in flight for one email would spend two provider calls and race
+  -- each other to a conclusion.
+  begin
+    insert into public.email_intelligence_runs
+      (business_unit_id, email_message_id, provider, model, prompt_version, status)
+    values ('00000000-0000-4000-9000-000000000001', v_email, 'fixture', 'x', 'v1', 'pending');
+  exception when others then
+    v_blocked := true;
+  end;
+
+  insert into test.results (section, name, passed, detail)
+  values ('intelligence', 'A SECOND READING CANNOT START WHILE ONE IS IN FLIGHT',
+          v_blocked, case when v_blocked then 'ok' else 'a concurrent run was accepted' end);
+
+  -- The service's real path: pending -> processing -> completed. Jumping
+  -- straight to completed is itself refused, which is asserted below.
+  update public.email_intelligence_runs
+     set status = 'processing', started_at = now()
+   where id = v_run;
+
+  update public.email_intelligence_runs
+     set status = 'completed', event_type = 'other', event_confidence = 1, completed_at = now()
+   where id = v_run;
+
+  v_blocked := false;
+  begin
+    update public.email_intelligence_runs set status = 'processing' where id = v_run;
+  exception when others then
+    v_blocked := true;
+  end;
+
+  insert into test.results (section, name, passed, detail)
+  values ('intelligence', 'A TERMINAL READING CANNOT BE REOPENED',
+          v_blocked, case when v_blocked then 'ok' else 'completed -> processing was accepted' end);
+
+
+  -- Once the first run is terminal, a retry is allowed and becomes reading 2.
+  insert into public.email_intelligence_runs
+    (business_unit_id, email_message_id, provider, model, prompt_version, status)
+  values ('00000000-0000-4000-9000-000000000001', v_email, 'fixture', 'x', 'v1', 'pending')
+  returning id, run_number into v_second, v_number;
+
+  insert into test.results (section, name, passed, detail)
+  values ('intelligence', 'A RETRY AFTER A TERMINAL RUN BECOMES THE NEXT READING',
+          v_number = 2, format('got %s', v_number));
+
+  -- Skipping `processing` is refused too: a run that reached a conclusion
+  -- without ever being in flight did not call a provider.
+  v_blocked := false;
+  begin
+    update public.email_intelligence_runs
+       set status = 'completed', completed_at = now()
+     where id = v_second;
+  exception when others then
+    v_blocked := true;
+  end;
+
+  insert into test.results (section, name, passed, detail)
+  values ('intelligence', 'A READING CANNOT JUMP STRAIGHT TO A CONCLUSION',
+          v_blocked, case when v_blocked then 'ok' else 'pending -> completed was accepted' end);
+
+
+  -- A completed reading with no conclusion is not a reading.
+  update public.email_intelligence_runs
+     set status = 'processing', started_at = now()
+   where id = v_second;
+
+  v_blocked := false;
+  begin
+    update public.email_intelligence_runs
+       set status = 'completed', completed_at = now(), event_type = null
+     where id = v_second;
+  exception when others then
+    v_blocked := true;
+  end;
+
+  insert into test.results (section, name, passed, detail)
+  values ('intelligence', 'a completed reading must carry a classification',
+          v_blocked, case when v_blocked then 'ok' else 'an empty conclusion was accepted' end);
+end $$;
+
+-- ---------------------------------------------------------------------------
+-- SECTION 46 — Audit, and what must not reach it
+-- ---------------------------------------------------------------------------
+select test.check('intelligence', 'interpretation runs are captured in the audit log',
+  (select count(*) > 0 from audit.audit_logs
+    where entity_type = 'email_intelligence_runs' and action = 'insert'), true);
+
+select test.check('intelligence', 'state changes are captured in the audit log',
+  (select count(*) > 0 from audit.audit_logs
+    where entity_type = 'email_intelligence_runs' and action = 'update'
+      and 'status' = any(changed_fields)), true);
+
+select test.check('intelligence', 'NO INTERPRETED CONTENT REACHES THE AUDIT LOG',
+  (select count(*) from audit.audit_logs
+    where entity_type = 'email_intelligence_runs'
+      and coalesce(new_data ->> 'summary', '[redacted]') <> '[redacted]'), 0::bigint);
+
+select test.check('intelligence', 'no extracted data reaches the audit log',
+  (select count(*) from audit.audit_logs
+    where entity_type = 'email_intelligence_runs'
+      and coalesce(new_data ->> 'extracted_data', '[redacted]') <> '[redacted]'), 0::bigint);
+
+select test.check('intelligence', 'no quoted evidence reaches the audit log',
+  (select count(*) from audit.audit_logs
+    where entity_type = 'email_intelligence_runs'
+      and coalesce(new_data ->> 'evidence', '[redacted]') <> '[redacted]'), 0::bigint);
+
+-- ---------------------------------------------------------------------------
+-- SECTION 47 — THE BUILD BOUNDARY  ***the point of Build 7A***
+--
+-- Interpretation may propose. It may not act.
+-- ---------------------------------------------------------------------------
+select test.check('intelligence', 'NO CRM TABLE REFERENCES AN INTERPRETATION',
+  (select count(*) from information_schema.table_constraints tc
+     join information_schema.constraint_column_usage ccu
+       on ccu.constraint_name = tc.constraint_name
+      and ccu.table_schema = tc.table_schema
+    where tc.constraint_type = 'FOREIGN KEY'
+      and tc.table_schema = 'public'
+      and tc.table_name in ('candidates', 'applications', 'interviews', 'assessments',
+                            'marketing_activities', 'notifications', 'review_items',
+                            'candidate_assignments')
+      and ccu.table_name = 'email_intelligence_runs'), 0::bigint);
+
+select test.check('intelligence', 'NO TRIGGER ON INTERPRETATION WRITES TO A CRM TABLE',
+  (select count(*) from pg_trigger tg
+     join pg_class c on c.oid = tg.tgrelid
+     join pg_proc p on p.oid = tg.tgfoid
+    where c.relname = 'email_intelligence_runs'
+      and not tg.tgisinternal
+      and p.prosrc ~* 'insert into public\.(candidates|applications|interviews|assessments|marketing_activities|notifications)'),
+  0::bigint);
+
+-- No function anywhere turns a reading into a record. Build 7B adds one, with
+-- a decision step in front of it.
+select test.check('intelligence', 'NO FUNCTION PROMOTES AN INTERPRETATION INTO A RECORD',
+  (select count(*) from pg_proc p
+     join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname in ('public', 'util')
+      and p.prosrc ~* 'email_intelligence_runs'
+      and p.prosrc ~* 'insert into public\.(candidates|applications|interviews|assessments|marketing_activities|notifications)'),
+  0::bigint);
+
+-- The seeded readings classify interviews, assessments and rejections. None of
+-- them produced one.
+select test.check('intelligence', 'AN INTERVIEW READING CREATED NO INTERVIEW',
+  (select count(*) from public.interviews i
+    where exists (
+      select 1 from public.email_intelligence_runs r
+      where r.event_type = 'interview'
+        and i.source_reference is not null
+        and i.source_reference like '%' || r.id::text || '%'
+    )), 0::bigint);
+
+select test.check('intelligence', 'no application traces back to an interpretation',
+  (select count(*) from public.applications a
+    where exists (
+      select 1 from public.email_intelligence_runs r
+      where a.source_reference is not null
+        and a.source_reference like '%' || r.id::text || '%'
+    )), 0::bigint);
+
+select test.check('intelligence', 'no notification was raised by an interpretation',
+  (select count(*) from public.notifications
+    where entity_type in ('email_intelligence_run', 'intelligence')), 0::bigint);
+
+-- A proposal is a proposal: writing one leaves the candidate untouched.
+--
+-- Asserted by taking a fingerprint of the row before and after, rather than by
+-- comparing timestamps — other sections of this suite legitimately edit
+-- candidates, so a timestamp comparison would fail for reasons that have
+-- nothing to do with interpretation.
+do $$
+declare
+  c_priya  constant uuid := '00000000-0000-4000-a000-000000000001';
+  v_before   text;
+  v_after    text;
+  v_run      uuid;
+  v_iv_before bigint;
+  v_iv_after  bigint;
+begin
+  select md5(to_jsonb(c)::text) into v_before from public.candidates c where c.id = c_priya;
+  select count(*) into v_iv_before from public.interviews;
+
+  insert into public.email_intelligence_runs
+    (business_unit_id, email_message_id, provider, model, prompt_version, status,
+     started_at, completed_at, event_type, event_confidence,
+     proposed_candidate_id, candidate_match_confidence)
+  values
+    ('00000000-0000-4000-9000-000000000001',
+     '00000000-0000-4000-9800-000000000002', 'fixture', 'x', 'v1',
+     'completed', now(), now(), 'interview', 0.99, c_priya, 0.95)
+  returning id into v_run;
+
+  select md5(to_jsonb(c)::text) into v_after from public.candidates c where c.id = c_priya;
+
+  insert into test.results (section, name, passed, detail)
+  values ('intelligence', 'A PROPOSED CANDIDATE WAS NOT MODIFIED',
+          v_before = v_after,
+          case when v_before = v_after then 'ok' else 'the candidate row changed' end);
+
+  -- And nothing else appeared either. Counted before and after rather than by
+  -- wall clock: this whole suite runs in a couple of seconds, and earlier
+  -- sections legitimately create interviews of their own.
+  select count(*) into v_iv_after from public.interviews;
+
+  insert into test.results (section, name, passed, detail)
+  values ('intelligence', 'STORING A PROPOSAL CREATED NO INTERVIEW',
+          v_iv_before = v_iv_after,
+          format('interviews before %s, after %s', v_iv_before, v_iv_after));
+end $$;

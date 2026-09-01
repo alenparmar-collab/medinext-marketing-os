@@ -516,3 +516,57 @@ export const EMAIL_SYNC_TRIGGER_LABELS: Record<EmailSyncTrigger, string> = {
   manual: 'Started by hand',
   scheduled: 'Scheduled',
 };
+
+/* ===========================================================================
+ * EMAIL INTELLIGENCE (Build 7A)
+ *
+ * Three separate vocabularies for three separate questions: where the RUN got
+ * to, what the model thinks the EMAIL is about, and which provider produced
+ * the reading. None of them is allowed to answer another's question.
+ * =========================================================================== */
+export const INTELLIGENCE_STATUSES = [
+  'pending',
+  'processing',
+  'completed',
+  'review_required',
+  'failed',
+  'ignored',
+] as const;
+export type IntelligenceStatus = (typeof INTELLIGENCE_STATUSES)[number];
+
+export const INTELLIGENCE_STATUS_META: Record<
+  IntelligenceStatus,
+  { label: string; tone: StatusTone; description: string }
+> = {
+  pending:         { label: 'Queued',        tone: 'muted',    description: 'Nothing has been sent to the provider yet.' },
+  processing:      { label: 'Processing',    tone: 'info',     description: 'A provider call is in flight.' },
+  completed:       { label: 'Interpreted',   tone: 'positive', description: 'Read and validated, with confidence high enough to stand.' },
+  review_required: { label: 'Needs review',  tone: 'caution',  description: 'Read, but a person should confirm it before anything is acted on.' },
+  failed:          { label: 'Failed',        tone: 'caution',  description: 'The provider or the validation refused it. Can be reprocessed.' },
+  ignored:         { label: 'Not applicable',tone: 'muted',    description: 'Filtered out before any provider call.' },
+};
+
+export const INTELLIGENCE_EVENT_TYPES = [
+  'application',
+  'interview',
+  'assessment',
+  'rejection',
+  'recruiter_response',
+  'other',
+] as const;
+export type IntelligenceEventType = (typeof INTELLIGENCE_EVENT_TYPES)[number];
+
+export const INTELLIGENCE_EVENT_TYPE_META: Record<
+  IntelligenceEventType,
+  { label: string; tone: StatusTone; description: string }
+> = {
+  application:        { label: 'Application',        tone: 'info',    description: 'About an application having been made or received.' },
+  interview:          { label: 'Interview',          tone: 'info',    description: 'About a specific interview.' },
+  assessment:         { label: 'Assessment',         tone: 'info',    description: 'About a test or exercise for the candidate.' },
+  rejection:          { label: 'Rejection',          tone: 'caution', description: 'The client is not proceeding.' },
+  recruiter_response: { label: 'Recruiter response', tone: 'neutral', description: 'A reply that moves things along without being an event of its own.' },
+  other:              { label: 'Not relevant',       tone: 'muted',   description: 'Not about any tracked event. Most mail is this.' },
+};
+
+export const INTELLIGENCE_PROVIDERS = ['openai', 'fixture'] as const;
+export type IntelligenceProviderKind = (typeof INTELLIGENCE_PROVIDERS)[number];

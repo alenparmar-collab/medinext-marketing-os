@@ -267,9 +267,33 @@ describe('provenance survives intact', () => {
     );
   });
 
-  it('no model or AI integration exists anywhere in the codebase', () => {
-    const forbidden = /openai|anthropic|huggingface|hugging_face|\bembedding\b|langchain/i;
-    const offenders = appSources.filter(({ text }) => forbidden.test(text)).map(({ path }) => path);
+  /**
+   * This began as "no model or AI integration exists anywhere".
+   *
+   * Build 7A adds one deliberately, so the assertion becomes the containment
+   * claim that still holds and is worth keeping: model integration lives in
+   * the intelligence module and nowhere else. It would fail the moment
+   * somebody wired a provider into the applications module or a page.
+   */
+  it('model integration is confined to the intelligence module', () => {
+    // Tests for INTEGRATION, not for the word: 'openai' legitimately appears
+    // in the provider vocabulary in config/statuses.ts, which calls nothing.
+    const forbidden =
+      /api\.openai\.com|api\.anthropic\.com|huggingface\.co|from ['"](openai|@anthropic-ai|langchain)|process\.env\.(OPENAI|ANTHROPIC|HUGGINGFACE)/i;
+    const offenders = appSources
+      .filter(({ path }) => !path.startsWith('src/server/modules/intelligence/'))
+      .filter(({ text }) => forbidden.test(text))
+      .map(({ path }) => path);
+    expect(offenders).toEqual([]);
+  });
+
+  it('no CRM module has a model dependency', () => {
+    const crm = /\/server\/modules\/(applications|interviews|assessments|activities|candidates|notifications|review|reports|assignments|notes)\//;
+    const forbidden = /openai|anthropic|huggingface|langchain|intelligence/i;
+    const offenders = appSources
+      .filter(({ path }) => crm.test(`/${path}`))
+      .filter(({ text }) => forbidden.test(text))
+      .map(({ path }) => path);
     expect(offenders).toEqual([]);
   });
 });

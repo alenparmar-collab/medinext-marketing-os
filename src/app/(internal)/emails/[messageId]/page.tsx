@@ -1,7 +1,7 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
-import { requirePermission } from '@/server/auth/actor';
+import { requirePermission, can } from '@/server/auth/actor';
 import { AppError } from '@/server/auth/errors';
 import { getEmail } from '@/server/modules/email/queries';
 import { PageHeader } from '@/components/patterns/page-header';
@@ -9,7 +9,9 @@ import { Card, CardBody, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { formatDateTime, formatFileSize, formatRelative } from '@/lib/utils/format';
-import { EMAIL_PROCESSING_STATUS_META } from '@/config/statuses';
+import { EMAIL_PROCESSING_STATUS_META, INTELLIGENCE_STATUS_META } from '@/config/statuses';
+import { getLatestRunForEmail } from '@/server/modules/intelligence/queries';
+import { InterpretButton } from '../../intelligence/interpret-button';
 
 export const metadata: Metadata = { title: 'Email' };
 
@@ -31,7 +33,7 @@ export default async function EmailDetailPage({
 }: {
   params: Promise<{ messageId: string }>;
 }) {
-  await requirePermission('email.view');
+  const actor = await requirePermission('email.view');
   const { messageId } = await params;
 
   let email;
@@ -43,6 +45,12 @@ export default async function EmailDetailPage({
   }
 
   const status = EMAIL_PROCESSING_STATUS_META[email.processingStatus];
+
+  // Interpretation is a separate capability from reading the mailbox, so this
+  // is fetched only for those who hold it.
+  const latestRun = can(actor, 'intelligence.view')
+    ? await getLatestRunForEmail(email.id)
+    : null;
 
   return (
     <div className="flex max-w-4xl flex-col gap-5">
@@ -155,6 +163,49 @@ export default async function EmailDetailPage({
                 </li>
               ))}
             </ul>
+          </CardBody>
+        </Card>
+      ) : null}
+
+      {can(actor, 'intelligence.view') ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>Interpretation</CardTitle>
+            {latestRun ? (
+              <Badge tone={INTELLIGENCE_STATUS_META[latestRun.status].tone}>
+                {INTELLIGENCE_STATUS_META[latestRun.status].label}
+              </Badge>
+            ) : null}
+          </CardHeader>
+          <CardBody>
+            {latestRun ? (
+              <>
+                <p className="text-[14px] text-[var(--text-primary)]">
+                  {latestRun.summary ?? 'No summary was produced.'}
+                </p>
+                <p className="mt-1.5 text-[12.5px] text-[var(--text-muted)]">
+                  A model&apos;s reading, kept separate from the email itself. It has changed no
+                  record.
+                </p>
+                <Link
+                  href={`/intelligence/${latestRun.id}`}
+                  className="mt-2 inline-block text-[13px] text-[var(--color-accent-600)] hover:underline"
+                >
+                  Open reading {latestRun.runNumber}
+                </Link>
+              </>
+            ) : (
+              <p className="text-[13px] text-[var(--text-secondary)]">
+                This email has not been interpreted. Interpretation runs on demand — nothing is
+                sent to a provider on its own.
+              </p>
+            )}
+
+            {can(actor, 'intelligence.run') ? (
+              <div className="mt-3 border-t border-[var(--border-subtle)] pt-3">
+                <InterpretButton emailMessageId={email.id} hasExistingRun={latestRun !== null} />
+              </div>
+            ) : null}
           </CardBody>
         </Card>
       ) : null}

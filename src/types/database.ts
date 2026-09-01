@@ -38,6 +38,9 @@ import type {
   EmailProcessingStatus,
   EmailSyncStatus,
   EmailSyncTrigger,
+  IntelligenceStatus,
+  IntelligenceEventType,
+  IntelligenceProviderKind,
 } from '@/config/statuses';
 import type { RoleCode } from '@/config/permissions';
 
@@ -498,6 +501,42 @@ export type EmailAttachmentRow = {
  * Ciphertext only. The plaintext token exists in memory during a request and
  * nowhere else — see src/server/modules/email/crypto.ts.
  */
+/**
+ * One reading of one email by one model.
+ *
+ * Note what is absent: any column that would let this become a business
+ * record. It proposes a candidate and describes an event; acting on either is
+ * Build 7B.
+ */
+export type EmailIntelligenceRunRow = {
+  id: string;
+  business_unit_id: string;
+  email_message_id: string;
+  run_number: number;
+  provider: IntelligenceProviderKind;
+  model: string;
+  prompt_version: string;
+  status: IntelligenceStatus;
+  started_at: string | null;
+  completed_at: string | null;
+  event_type: IntelligenceEventType | null;
+  event_confidence: number | null;
+  summary: string | null;
+  proposed_candidate_id: string | null;
+  candidate_match_confidence: number | null;
+  candidate_match_reasons: string[];
+  candidate_match_evidence: Record<string, unknown>;
+  extracted_data: Record<string, unknown>;
+  evidence: { field: string; excerpt: string }[];
+  validation_ok: boolean | null;
+  validation_result: Record<string, unknown>;
+  error_code: string | null;
+  error_message: string | null;
+  requested_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export type MailboxCredentialRow = {
   mailbox_id: string;
   refresh_token_encrypted: string;
@@ -555,6 +594,7 @@ export type Database = {
       email_messages: TableDef<EmailMessageRow>;
       email_attachments: TableDef<EmailAttachmentRow>;
       mailbox_sync_runs: TableDef<MailboxSyncRunRow>;
+      email_intelligence_runs: TableDef<EmailIntelligenceRunRow>;
     };
     Views: { [_ in never]: never };
     Functions: {

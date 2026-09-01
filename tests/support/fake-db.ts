@@ -53,9 +53,15 @@ export class FakeDb {
   }
 }
 
+type Filter =
+  | { kind: 'eq' | 'neq' | 'lte' | 'gte' | 'is'; column: string; value: unknown }
+  | { kind: 'in'; column: string; values: unknown[] };
+
 class FakeQuery {
-  private filters: { column: string; value: unknown }[] = [];
+  private filters: Filter[] = [];
   private pending: { kind: 'insert' | 'upsert' | 'update'; payload: Row } | null = null;
+  private ordering: { column: string; ascending: boolean }[] = [];
+  private limitTo: number | null = null;
 
   constructor(
     private readonly db: FakeDb,
@@ -82,12 +88,76 @@ class FakeQuery {
   }
 
   eq(column: string, value: unknown) {
-    this.filters.push({ column, value });
+    this.filters.push({ kind: 'eq', column, value });
+    return this;
+  }
+
+  neq(column: string, value: unknown) {
+    this.filters.push({ kind: 'neq', column, value });
+    return this;
+  }
+
+  lte(column: string, value: unknown) {
+    this.filters.push({ kind: 'lte', column, value });
+    return this;
+  }
+
+  gte(column: string, value: unknown) {
+    this.filters.push({ kind: 'gte', column, value });
+    return this;
+  }
+
+  is(column: string, value: unknown) {
+    this.filters.push({ kind: 'is', column, value });
+    return this;
+  }
+
+  in(column: string, values: unknown[]) {
+    this.filters.push({ kind: 'in', column, values });
+    return this;
+  }
+
+  order(column: string, options?: { ascending?: boolean }) {
+    this.ordering.push({ column, ascending: options?.ascending ?? true });
+    return this;
+  }
+
+  limit(count: number) {
+    this.limitTo = count;
     return this;
   }
 
   private matches(row: Row): boolean {
-    return this.filters.every((f) => row[f.column] === f.value);
+    return this.filters.every((f) => {
+      const actual = row[f.column];
+      switch (f.kind) {
+        case 'eq':
+          return actual === f.value;
+        case 'neq':
+          return actual !== f.value;
+        case 'is':
+          // PostgREST's `.is(column, null)` — an identity test, not equality.
+          return f.value === null ? actual === null || actual === undefined : actual === f.value;
+        case 'lte':
+          return String(actual) <= String(f.value);
+        case 'gte':
+          return String(actual) >= String(f.value);
+        case 'in':
+          return f.values.includes(actual);
+      }
+    });
+  }
+
+  private applyOrderAndLimit(rows: Row[]): Row[] {
+    let out = rows;
+    for (const { column, ascending } of [...this.ordering].reverse()) {
+      out = [...out].sort((a, b) => {
+        const left = String(a[column] ?? '');
+        const right = String(b[column] ?? '');
+        return ascending ? left.localeCompare(right) : right.localeCompare(left);
+      });
+    }
+    return this.limitTo === null ? out : out.slice(0, this.limitTo);
   }
 
   private run(): Row[] {
@@ -130,7 +200,7 @@ class FakeQuery {
       return [created];
     }
 
-    return rows.filter((row) => this.matches(row));
+    return this.applyOrderAndLimit(rows.filter((row) => this.matches(row)));
   }
 
   async maybeSingle() {

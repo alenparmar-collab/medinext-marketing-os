@@ -33,6 +33,7 @@ export const INTERNAL_NAV: NavItem[] = [
   { label: 'Daily Reports', href: '/reports/daily', icon: 'FileText', status: 'ready', permission: 'report.view_own' },
   { label: 'Review Queue', href: '/review', icon: 'ListChecks', status: 'ready', permission: 'review.view' },
   { label: 'Emails', href: '/emails', icon: 'Mail', status: 'ready', permission: 'email.view' },
+  { label: 'Interpretation', href: '/intelligence', icon: 'ScanText', status: 'ready', permission: 'intelligence.view' },
   { label: 'Notifications', href: '/notifications', icon: 'Bell', status: 'ready' },
   { label: 'Reports', href: '/reports', icon: 'BarChart3', status: 'ready', permission: 'report.view_all' },
   { label: 'Team', href: '/team', icon: 'UserCog', status: 'ready', permission: 'user.view' },
