@@ -8,6 +8,7 @@ import { createInterview } from '@/server/modules/interviews/commands';
 import { createAssessment } from '@/server/modules/assessments/commands';
 import { changeApplicationStatus } from '@/server/modules/applications/commands';
 import type { CommandProvenance } from '@/server/modules/provenance';
+import type { IntelligenceEventType } from '@/config/statuses';
 import { decide, type DecisionInput } from './engine';
 import type { Decision } from './engine';
 
@@ -87,7 +88,18 @@ export async function evaluateIntelligenceRun(
   const input = await gatherFacts(supabase, { ...run, event_type: eventType }, actor);
   const decision = decide(input);
 
-  const idempotencyKey = `${run.email_message_id}:${eventType}`;
+  // The key is the email, the event type, AND the fingerprint of what this
+  // reading proposes to do.
+  //
+  // Build 7B keyed on (email, event type) alone, which made every re-reading of
+  // an email idempotent — including one that had changed its mind. That is the
+  // right answer for a redelivery and the wrong one for a correction: a second
+  // reading that moves the interview to another day would have collapsed onto
+  // the first row and vanished. Adding the fingerprint keeps the redelivery
+  // idempotent (same material proposal, same key) while letting a genuinely
+  // different reading land as its own decision — which `decide()` has already
+  // forced to review, never to a second automatic write.
+  const idempotencyKey = `${run.email_message_id}:${eventType}:${decision.fingerprint}`;
 
   // The decision row is written under the service role because deciding is the
   // engine's act, not the user's: a person who could insert one could invent
@@ -123,8 +135,22 @@ export async function evaluateIntelligenceRun(
           candidate_match_confidence: run.candidate_match_confidence,
           event_confidence: run.event_confidence,
           idempotency_key: idempotencyKey,
+          proposal_fingerprint: decision.fingerprint,
+          // What this reading disagrees with, if anything. Stored on the row so
+          // the queue can show it without recomputing a decision.
+          supersedes_item_id: decision.interpretationChange?.previousItemId ?? null,
+          superseded_fingerprint: decision.interpretationChange?.previousFingerprint ?? null,
+          superseded_record_id: decision.interpretationChange?.existingRecordId ?? null,
+          superseded_record_kind: decision.interpretationChange?.existingRecordKind ?? null,
+          changed_fields: decision.interpretationChange?.changedFields ?? [],
           ...(decision.outcome === 'ignore'
             ? { reviewed_at: new Date().toISOString() }
+            : {}),
+          // An automatic approval claims itself in the same insert: the row is
+          // never claimable by anyone else, and the database's "an approval must
+          // have been claimed" rule holds for automation too.
+          ...(decision.outcome === 'auto_approve'
+            ? { claimed_by: actor.userId, claimed_at: new Date().toISOString() }
             : {}),
         })
         .select('id, status, created_application_id, created_interview_id, created_assessment_id')
@@ -145,7 +171,7 @@ export async function evaluateIntelligenceRun(
       outcome: decision.outcome,
       status: item.status,
       reasonCodes: decision.reasonCodes,
-      explanation: 'A decision for this email and event type already exists.',
+      explanation: 'A decision for this email and this exact proposal already exists.',
       createdRecordId:
         item.created_application_id ?? item.created_interview_id ?? item.created_assessment_id,
       createdRecordKind: null,
@@ -186,6 +212,7 @@ export async function evaluateIntelligenceRun(
     written,
     { reviewed_at: new Date().toISOString(), final_data: decision.proposedData },
     actor,
+    { runId: run.id },
   );
 
   return {
@@ -220,6 +247,7 @@ async function markApproved(
   written: { recordId: string; kind: 'application' | 'interview' | 'assessment' | 'rejection' },
   patch: Record<string, unknown>,
   actor: ActorContext,
+  context: { runId: string },
 ): Promise<void> {
   const write = async () =>
     withServiceRole(actor, `Record approval of proposal ${itemId}`, async (db) => {
@@ -248,6 +276,18 @@ async function markApproved(
         `The ${written.kind} was created (${written.recordId}), but this proposal could not ` +
           'be marked approved. The record stands; do not approve this proposal again — ' +
           'ask an administrator to close it.',
+        undefined,
+        // Everything needed to close this out by hand, so nobody has to infer
+        // what happened from a timestamp. The claim is deliberately NOT
+        // released: the item stays claimed precisely so a retry cannot walk
+        // back through the CRM write and create the record twice.
+        {
+          reviewItemId: itemId,
+          intelligenceRunId: context.runId,
+          createdRecordKind: written.kind,
+          createdRecordId: written.recordId,
+          failure: 'the approval could not be recorded after the record was created',
+        },
       );
     }
   }
@@ -288,6 +328,10 @@ export async function approveProposal(
 
   // Double-click, retried request, two reviewers on the same item: whichever
   // arrives second finds it decided and stops.
+  //
+  // This read-then-check is a courtesy, not the protection — between the SELECT
+  // above and the write below, another request can do the same thing. The
+  // protection is the claim on the next line, which is one atomic UPDATE.
   if (item.status === 'approved') {
     throw new AppError('CONFLICT', 'This proposal has already been approved.');
   }
@@ -295,9 +339,37 @@ export async function approveProposal(
     throw new AppError('CONFLICT', `This proposal was already ${item.status}.`);
   }
 
+  // ---- The claim ----------------------------------------------------------
+  //
+  // ONE REVIEW ITEM → ONE CRM ACTION, enforced by the database rather than by
+  // this process being careful.
+  //
+  // `claim_proposal` is a single `update ... where claimed_at is null`. Under
+  // READ COMMITTED, concurrent updates to the same row serialise and the loser
+  // re-evaluates that predicate against the winner's committed row, so it
+  // matches nothing and returns null. Twelve simultaneous approvals therefore
+  // produce exactly one claim, and only the holder of the claim reaches the CRM
+  // write below. Two tabs, two reviewers, a double-click, a retried request and
+  // a retried worker are all the same case.
+  //
+  // It runs through the caller's own client, so the queue policy still decides
+  // who may claim at all; the CRM permission is checked separately, below and
+  // in the database, because claiming is not approving.
+  const { data: claimedId, error: claimError } = await supabase.rpc('claim_proposal', {
+    p_item_id: input.reviewItemId,
+  });
+  if (claimError) throw claimError;
+  if (!claimedId) {
+    throw new AppError(
+      'CONFLICT',
+      'Someone else is already acting on this proposal, or it has already been decided.',
+    );
+  }
+
   const finalData = { ...item.proposed_data, ...(input.corrections ?? {}) };
 
-  const written = await performCrmWrite(
+  const written = await performCrmWriteOrRelease(
+    input.reviewItemId,
     {
       id: item.intelligence_run_id,
       business_unit_id: item.business_unit_id,
@@ -332,6 +404,7 @@ export async function approveProposal(
       final_data: finalData,
     },
     actor,
+    { runId: item.intelligence_run_id },
   );
 
   return {
@@ -343,6 +416,43 @@ export async function approveProposal(
     createdRecordId: written.recordId,
     createdRecordKind: written.kind,
   };
+}
+
+/**
+ * The CRM write, with the claim released if it fails.
+ *
+ * A claim that is never released is a proposal nobody can ever act on: the
+ * queue would show it open, every approval would be refused as already claimed,
+ * and the only recovery would be a database edit. So a failed write hands the
+ * item back — status `open`, claim cleared — and the reviewer can try again
+ * once whatever failed is fixed.
+ *
+ * Releasing is deliberately narrow: it only ever moves an item BACKWARDS to
+ * open, and only one this request itself claimed. It can never turn a decided
+ * item back into an undecided one.
+ */
+async function performCrmWriteOrRelease(
+  reviewItemId: string,
+  run: {
+    id: string;
+    business_unit_id: string;
+    email_message_id: string;
+    event_type: string;
+    proposed_candidate_id: string | null;
+  },
+  data: Record<string, unknown>,
+  actor: ActorContext,
+  provenance: CommandProvenance,
+): Promise<{ recordId: string; kind: 'application' | 'interview' | 'assessment' | 'rejection' }> {
+  try {
+    return await performCrmWrite(run, data, actor, provenance);
+  } catch (error) {
+    const supabase = await createServerSupabase();
+    // Best effort: if the release itself fails the original error is still the
+    // one worth reporting, and the item stays claimed rather than being lost.
+    await supabase.rpc('release_proposal_claim', { p_item_id: reviewItemId });
+    throw error;
+  }
 }
 
 /**
@@ -522,11 +632,20 @@ async function gatherFacts(
           .eq('id', run.proposed_candidate_id)
           .maybeSingle()
       : Promise.resolve({ data: null }),
+    // Every decision already made about this email and event type — not just
+    // the one whose key this reading would produce, because the whole point is
+    // to notice when this reading would produce a DIFFERENT key. Most recent
+    // first; the latest decision is the one a change is measured against.
     supabase
       .from('intelligence_review_items')
-      .select('status, final_data')
+      .select(
+        'id, status, proposal_fingerprint, proposed_data, proposed_candidate_id, created_application_id, created_interview_id, created_assessment_id',
+      )
       .eq('business_unit_id', run.business_unit_id)
-      .eq('idempotency_key', `${run.email_message_id}:${run.event_type}`)
+      .eq('email_message_id', run.email_message_id)
+      .eq('event_type', run.event_type as IntelligenceEventType)
+      .order('created_at', { ascending: false })
+      .limit(1)
       .maybeSingle(),
   ]);
 
@@ -593,8 +712,23 @@ async function gatherFacts(
     })),
     alreadyActioned: prior.data
       ? {
+          itemId: prior.data.id,
           status: prior.data.status,
-          approvedData: (prior.data.final_data as Record<string, unknown> | null) ?? null,
+          fingerprint: prior.data.proposal_fingerprint,
+          proposedData: (prior.data.proposed_data as Record<string, unknown> | null) ?? null,
+          candidateId: prior.data.proposed_candidate_id,
+          createdRecordId:
+            prior.data.created_interview_id ??
+            prior.data.created_assessment_id ??
+            prior.data.created_application_id ??
+            null,
+          createdRecordKind: prior.data.created_interview_id
+            ? ('interview' as const)
+            : prior.data.created_assessment_id
+              ? ('assessment' as const)
+              : prior.data.created_application_id
+                ? ('application' as const)
+                : null,
         }
       : null,
     actorPermissions: actor.permissions as ReadonlySet<string>,

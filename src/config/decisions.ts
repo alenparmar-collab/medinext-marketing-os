@@ -58,6 +58,7 @@ export const DECISION_REASON_CODES = [
   'conflicting_candidate_information',
   'actor_lacks_permission',
   'stale_event',
+  'interpretation_changed',
   'other',
 ] as const;
 export type DecisionReasonCode = (typeof DECISION_REASON_CODES)[number];
@@ -78,6 +79,13 @@ export const DECISION_REASON_META: Record<
   },
   conflict_detected: {
     label: 'This contradicts something already recorded.',
+    priority: 'high',
+  },
+  // The email was processed before and the latest reading disagrees with what
+  // was done. Always high: something already on file may be wrong, and the
+  // longer that stands the more people act on it.
+  interpretation_changed: {
+    label: 'A later reading of this email disagrees with the action already taken.',
     priority: 'high',
   },
   conflicting_candidate_information: {

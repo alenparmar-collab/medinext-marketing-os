@@ -241,6 +241,26 @@ probe "decided content staying out of the audit log" \
   "@supabase/tests/mutations/decisions_audit_unredacted.sql" \
   "NO PROPOSED CONTENT REACHES THE AUDIT LOG"
 
+probe "a claim being takeable only once" \
+  "@supabase/tests/mutations/claim_not_atomic.sql" \
+  "A CLAIM CAN BE TAKEN ONLY ONCE"
+
+probe "claiming going through the queue's permission, not around it" \
+  "@supabase/tests/mutations/claim_authorization.sql" \
+  "A CANDIDATE CANNOT CLAIM A PROPOSAL"
+
+probe "an approval having gone through the claim" \
+  "@supabase/tests/mutations/approval_without_claim.sql" \
+  "AN APPROVAL THAT WAS NEVER CLAIMED IS REFUSED"
+
+probe "one review item producing one record" \
+  "@supabase/tests/mutations/two_created_records.sql" \
+  "ONE REVIEW ITEM CANNOT NAME TWO CREATED RECORDS"
+
+probe "a changed interpretation naming what it disagrees with" \
+  "@supabase/tests/mutations/unlinked_change.sql" \
+  "A CHANGED INTERPRETATION MUST NAME WHAT IT SUPERSEDES"
+
 probe "cross-candidate attachment being structurally impossible" \
   "alter table public.interviews
      drop constraint interviews_application_id_candidate_id_fkey;

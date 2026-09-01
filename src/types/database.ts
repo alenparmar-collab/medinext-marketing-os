@@ -573,6 +573,14 @@ export type IntelligenceReviewItemRow = {
   created_interview_id: string | null;
   created_assessment_id: string | null;
   idempotency_key: string;
+  proposal_fingerprint: string;
+  claimed_by: string | null;
+  claimed_at: string | null;
+  supersedes_item_id: string | null;
+  superseded_fingerprint: string | null;
+  superseded_record_id: string | null;
+  superseded_record_kind: string | null;
+  changed_fields: string[];
   created_at: string;
   updated_at: string;
 }
@@ -655,6 +663,14 @@ export type Database = {
       request_review_checks: {
         Args: Record<string, never>;
         Returns: number;
+      };
+      claim_proposal: {
+        Args: { p_item_id: string };
+        Returns: string | null;
+      };
+      release_proposal_claim: {
+        Args: { p_item_id: string };
+        Returns: string | null;
       };
       reassign_candidate: {
         Args: {

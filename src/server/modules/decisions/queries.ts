@@ -119,10 +119,28 @@ export interface ProposalDetail extends ProposalListItem {
   };
   evidence: { field: string; excerpt: string }[];
   candidateMatchReasons: string[];
+  /** Server-computed fingerprint of the material proposal. */
+  fingerprint: string;
+  claimedAt: string | null;
+  /**
+   * Set only when this decision came from a later reading that disagreed with
+   * an earlier one. Structured facts — two proposals, the fields that moved,
+   * the record already on file — and no model reasoning.
+   */
+  interpretationChange: {
+    previousItemId: string;
+    previousFingerprint: string | null;
+    previousStatus: string | null;
+    previousDecidedAt: string | null;
+    previousData: Record<string, unknown> | null;
+    changedFields: string[];
+    existingRecordId: string | null;
+    existingRecordKind: string | null;
+  } | null;
 }
 
 const DETAIL_COLUMNS =
-  'id, business_unit_id, intelligence_run_id, email_message_id, event_type, outcome, status, priority, reason_codes, explanation, proposed_candidate_id, proposed_data, corrected_data, final_data, candidate_match_confidence, event_confidence, decision_notes, reviewed_by, reviewed_at, created_application_id, created_interview_id, created_assessment_id, created_at';
+  'id, business_unit_id, intelligence_run_id, email_message_id, event_type, outcome, status, priority, reason_codes, explanation, proposed_candidate_id, proposed_data, corrected_data, final_data, candidate_match_confidence, event_confidence, decision_notes, reviewed_by, reviewed_at, created_application_id, created_interview_id, created_assessment_id, created_at, proposal_fingerprint, claimed_at, supersedes_item_id, superseded_fingerprint, superseded_record_id, superseded_record_kind, changed_fields';
 
 export async function getProposal(proposalId: string): Promise<ProposalDetail> {
   const supabase = await createServerSupabase();
@@ -136,7 +154,7 @@ export async function getProposal(proposalId: string): Promise<ProposalDetail> {
   if (error) throw error;
   if (!data) throw new AppError('NOT_FOUND', 'Proposal not found.');
 
-  const [email, run, candidate, reviewer] = await Promise.all([
+  const [email, run, candidate, reviewer, previous] = await Promise.all([
     supabase
       .from('email_messages')
       .select('subject, from_address, from_name, to_addresses, received_at, body_text')
@@ -156,6 +174,16 @@ export async function getProposal(proposalId: string): Promise<ProposalDetail> {
       : Promise.resolve({ data: null }),
     data.reviewed_by
       ? supabase.from('users').select('full_name').eq('id', data.reviewed_by).maybeSingle()
+      : Promise.resolve({ data: null }),
+    // The decision this one disagrees with, when there is one. Read through the
+    // caller's client like everything else, so a superseded decision from
+    // another tenant simply does not come back.
+    data.supersedes_item_id
+      ? supabase
+          .from('intelligence_review_items')
+          .select('id, status, event_type, proposed_data, final_data, reviewed_at, created_at')
+          .eq('id', data.supersedes_item_id)
+          .maybeSingle()
       : Promise.resolve({ data: null }),
   ]);
 
@@ -196,6 +224,27 @@ export async function getProposal(proposalId: string): Promise<ProposalDetail> {
     },
     evidence: (run.data?.evidence as { field: string; excerpt: string }[] | undefined) ?? [],
     candidateMatchReasons: run.data?.candidate_match_reasons ?? [],
+    fingerprint: data.proposal_fingerprint,
+    claimedAt: data.claimed_at,
+    // Present only when a later reading disagreed with an earlier decision.
+    // Factual and structured: two proposals, the fields that moved, and the
+    // record already on file. No model reasoning of any kind.
+    interpretationChange: data.supersedes_item_id
+      ? {
+          previousItemId: data.supersedes_item_id,
+          previousFingerprint: data.superseded_fingerprint,
+          previousStatus: previous.data?.status ?? null,
+          previousDecidedAt: previous.data?.reviewed_at ?? previous.data?.created_at ?? null,
+          previousData:
+            ((previous.data?.final_data ?? previous.data?.proposed_data) as Record<
+              string,
+              unknown
+            > | null) ?? null,
+          changedFields: data.changed_fields ?? [],
+          existingRecordId: data.superseded_record_id,
+          existingRecordKind: data.superseded_record_kind,
+        }
+      : null,
   };
 }
 

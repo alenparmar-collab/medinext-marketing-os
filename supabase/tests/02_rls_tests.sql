@@ -2895,10 +2895,11 @@ select test.check('decisions', 'AUTHORIZED MANAGER READS THEIR UNIT''S PROPOSALS
 select test.check('decisions', 'NOBODY CAN CREATE A PROPOSAL THROUGH THE API',
   test.write_denied(:'ADMIN',
     'insert into public.intelligence_review_items (business_unit_id, intelligence_run_id, '
-    || 'email_message_id, event_type, outcome, proposed_data, idempotency_key) values ('
+    || 'email_message_id, event_type, outcome, proposed_data, idempotency_key, '
+    || 'proposal_fingerprint) values ('
     || quote_literal(:'EU_UNIT') || ', ''00000000-0000-4000-9b00-000000000001'', '
     || '''00000000-0000-4000-9800-000000000001'', ''interview'', ''auto_approve'', '
-    || '''{}''::jsonb, ''forged'')'), true);
+    || '''{}''::jsonb, ''forged'', ''forged'')'), true);
 
 select test.check('decisions', 'nobody can delete decision history',
   test.write_denied(:'ADMIN',
@@ -2945,9 +2946,10 @@ begin
   begin
     insert into public.intelligence_review_items
       (business_unit_id, intelligence_run_id, email_message_id, event_type,
-       outcome, proposed_data, idempotency_key)
+       outcome, proposed_data, idempotency_key, proposal_fingerprint)
     values (c_unit, c_run, c_email, 'application', 'review_required', '{}'::jsonb,
-            c_email::text || ':application');
+            c_email::text || ':application:seedfp-application-northwind',
+            'seedfp-application-northwind');
   exception when others then
     v_blocked := true;
   end;
@@ -2961,9 +2963,13 @@ begin
   delete from public.intelligence_review_items where idempotency_key = 'test:approval-contract';
   insert into public.intelligence_review_items
     (business_unit_id, intelligence_run_id, email_message_id, event_type,
-     outcome, status, proposed_data, idempotency_key)
+     outcome, status, proposed_data, idempotency_key, proposal_fingerprint,
+     claimed_by, claimed_at)
   values (c_unit, c_run, c_email, 'interview', 'review_required', 'open', '{}'::jsonb,
-          'test:approval-contract')
+          'test:approval-contract', 'testfp:approval-contract',
+          -- Claimed already, so the assertion below is about the approval
+          -- naming its record rather than about the claim.
+          '00000000-0000-4000-8000-000000000002', now())
   returning id into v_item;
 
   v_blocked := false;
@@ -3003,9 +3009,10 @@ begin
   begin
     insert into public.intelligence_review_items
       (business_unit_id, intelligence_run_id, email_message_id, event_type,
-       outcome, proposed_data, reason_codes, idempotency_key)
+       outcome, proposed_data, reason_codes, idempotency_key, proposal_fingerprint)
     values (c_unit, c_run, c_email, 'assessment', 'auto_approve', '{}'::jsonb,
-            array['missing_timezone']::decision_reason_code[], 'test:reserved-auto');
+            array['missing_timezone']::decision_reason_code[], 'test:reserved-auto',
+            'testfp:reserved-auto');
   exception when others then
     v_blocked := true;
   end;
@@ -3032,14 +3039,14 @@ begin
     insert into public.intelligence_review_items
       (business_unit_id, intelligence_run_id, email_message_id, event_type,
        outcome, proposed_data, proposed_candidate_id, candidate_match_confidence,
-       idempotency_key)
+       idempotency_key, proposal_fingerprint)
     values ('00000000-0000-4000-9000-000000000001',
             '00000000-0000-4000-9b00-000000000001',
             '00000000-0000-4000-9800-000000000001',
             'interview', 'review_required', '{}'::jsonb,
             -- Hiroshi Tanaka, APAC.
             '00000000-0000-4000-a000-000000000006', 0.95,
-            'test:cross-tenant-match');
+            'test:cross-tenant-match', 'testfp:cross-tenant-match');
   exception when others then
     v_blocked := true;
   end;
@@ -3086,12 +3093,16 @@ begin
   delete from public.intelligence_review_items where idempotency_key = 'test:approval-permission';
   insert into public.intelligence_review_items
     (business_unit_id, intelligence_run_id, email_message_id, event_type,
-     outcome, status, proposed_data, idempotency_key)
+     outcome, status, proposed_data, idempotency_key, proposal_fingerprint,
+     claimed_by, claimed_at)
   values (c_unit,
           '00000000-0000-4000-9b00-000000000001',
           '00000000-0000-4000-9800-000000000001',
           'interview', 'review_required', 'open', '{}'::jsonb,
-          'test:approval-permission')
+          'test:approval-permission', 'testfp:approval-permission',
+          -- Pre-claimed, so what is being tested below is the permission gate
+          -- and not the claim.
+          c_salas, now())
   returning id into v_item;
 
   -- ---- (a) No queue access: the policy refuses him ------------------------
@@ -3227,13 +3238,15 @@ begin
   delete from public.intelligence_review_items where idempotency_key = 'test:audit';
   insert into public.intelligence_review_items
     (business_unit_id, intelligence_run_id, email_message_id, event_type,
-     outcome, status, proposed_data, explanation, idempotency_key)
+     outcome, status, proposed_data, explanation, idempotency_key,
+     proposal_fingerprint, claimed_by, claimed_at)
   values (c_unit,
           '00000000-0000-4000-9b00-000000000001',
           '00000000-0000-4000-9800-000000000001',
           'interview', 'review_required', 'open', '{}'::jsonb,
           'Held because the message states a time with no time zone.',
-          'test:audit')
+          'test:audit', 'testfp:audit',
+          '00000000-0000-4000-8000-000000000002', now())
   returning id into v_item;
 
   insert into test.results (section, name, passed, detail)
@@ -3303,3 +3316,227 @@ select test.check('decisions', 'THE REVIEW TABLE CANNOT RECORD A CREATED CANDIDA
   (select count(*) from information_schema.columns
     where table_schema = 'public' and table_name = 'intelligence_review_items'
       and column_name like 'created_candidate%'), 0::bigint);
+
+-- ===========================================================================
+-- BUILD 7B.1 — One review item, one CRM action
+-- ===========================================================================
+
+-- ---------------------------------------------------------------------------
+-- SECTION 56 — The claim
+--
+-- The protection is one atomic UPDATE inside `claim_proposal`. These assertions
+-- are about who may take a claim and how many times it may be taken; that it
+-- holds under REAL concurrency is proved by scripts/db-concurrency-test.sh,
+-- which races twelve psql sessions for the same row — a single-session test
+-- cannot prove a race is closed, only that the rules around it are right.
+-- ---------------------------------------------------------------------------
+do $$
+declare
+  c_unit constant uuid := '00000000-0000-4000-9000-000000000001';
+  v_item uuid;
+begin
+  delete from public.intelligence_review_items where idempotency_key = 'test:claim';
+  insert into public.intelligence_review_items
+    (id, business_unit_id, intelligence_run_id, email_message_id, event_type,
+     outcome, status, proposed_data, idempotency_key, proposal_fingerprint)
+  values ('00000000-0000-4000-9c00-0000000000c1', c_unit,
+          '00000000-0000-4000-9b00-000000000001',
+          '00000000-0000-4000-9800-000000000001',
+          'interview', 'review_required', 'open', '{}'::jsonb,
+          'test:claim', 'testfp:claim')
+  on conflict (id) do update
+     set status = 'open', claimed_at = null, claimed_by = null;
+  v_item := '00000000-0000-4000-9c00-0000000000c1';
+end $$;
+
+-- Nobody outside the queue's permission can take a claim. Ordered first
+-- deliberately: a refused claim changes nothing, so the later assertions still
+-- start from an unclaimed item.
+select test.check('decisions', 'A CANDIDATE CANNOT CLAIM A PROPOSAL',
+  test.count_as(:'PRIYA_USER',
+    'select count(*) from (select public.claim_proposal('
+    || quote_literal('00000000-0000-4000-9c00-0000000000c1') || ') as id) t where t.id is not null'),
+  0::bigint);
+
+select test.check('decisions', 'AN UNAUTHORIZED RECRUITER CANNOT CLAIM A PROPOSAL',
+  test.count_as(:'SALAS',
+    'select count(*) from (select public.claim_proposal('
+    || quote_literal('00000000-0000-4000-9c00-0000000000c1') || ') as id) t where t.id is not null'),
+  0::bigint);
+
+select test.check('decisions', 'CROSS-TENANT: THE APAC PROPOSAL CANNOT BE CLAIMED FROM THE EU',
+  test.count_as(:'MANAGER',
+    'select count(*) from (select public.claim_proposal('
+    || quote_literal('00000000-0000-4000-9c00-000000000005') || ') as id) t where t.id is not null'),
+  0::bigint);
+
+select test.check('decisions', 'AN AUTHORIZED MANAGER CAN CLAIM',
+  test.count_as(:'MANAGER',
+    'select count(*) from (select public.claim_proposal('
+    || quote_literal('00000000-0000-4000-9c00-0000000000c1') || ') as id) t where t.id is not null'),
+  1::bigint);
+
+-- The whole point: the second one gets nothing.
+select test.check('decisions', 'A CLAIM CAN BE TAKEN ONLY ONCE',
+  test.count_as(:'MANAGER',
+    'select count(*) from (select public.claim_proposal('
+    || quote_literal('00000000-0000-4000-9c00-0000000000c1') || ') as id) t where t.id is not null'),
+  0::bigint);
+
+select test.check('decisions', 'a claim moves the item into review and names who holds it',
+  (select count(*) from public.intelligence_review_items
+    where id = '00000000-0000-4000-9c00-0000000000c1'
+      and status = 'in_review' and claimed_at is not null
+      and claimed_by = '00000000-0000-4000-8000-000000000002'), 1::bigint);
+
+select test.check('decisions', 'A RELEASED CLAIM RETURNS THE ITEM TO THE QUEUE',
+  test.count_as(:'MANAGER',
+    'select count(*) from (select public.release_proposal_claim('
+    || quote_literal('00000000-0000-4000-9c00-0000000000c1') || ') as id) t where t.id is not null'),
+  1::bigint);
+
+select test.check('decisions', 'a released item is claimable again',
+  test.count_as(:'MANAGER',
+    'select count(*) from (select public.claim_proposal('
+    || quote_literal('00000000-0000-4000-9c00-0000000000c1') || ') as id) t where t.id is not null'),
+  1::bigint);
+
+-- ---------------------------------------------------------------------------
+-- SECTION 57 — Constraints that make a duplicate action unstorable
+-- ---------------------------------------------------------------------------
+do $$
+declare
+  c_unit constant uuid := '00000000-0000-4000-9000-000000000001';
+  v_item      uuid;
+  v_interview uuid;
+  v_blocked   boolean;
+begin
+  select i.id into v_interview from public.interviews i
+   where i.business_unit_id = c_unit limit 1;
+
+  -- An approval that was never claimed did not go through the one path that
+  -- can guarantee it happened once.
+  delete from public.intelligence_review_items where idempotency_key = 'test:unclaimed-approval';
+  insert into public.intelligence_review_items
+    (business_unit_id, intelligence_run_id, email_message_id, event_type,
+     outcome, status, proposed_data, idempotency_key, proposal_fingerprint)
+  values (c_unit, '00000000-0000-4000-9b00-000000000001',
+          '00000000-0000-4000-9800-000000000001',
+          'interview', 'review_required', 'open', '{}'::jsonb,
+          'test:unclaimed-approval', 'testfp:unclaimed-approval')
+  returning id into v_item;
+
+  v_blocked := false;
+  begin
+    update public.intelligence_review_items
+       set status = 'approved', reviewed_by = '00000000-0000-4000-8000-000000000002',
+           reviewed_at = now(), created_interview_id = v_interview
+     where id = v_item;
+  exception when others then
+    v_blocked := true;
+  end;
+
+  insert into test.results (section, name, passed, detail)
+  values ('decisions', 'AN APPROVAL THAT WAS NEVER CLAIMED IS REFUSED',
+          v_blocked, case when v_blocked then 'ok' else 'an unclaimed approval was accepted' end);
+
+  -- One item, one record. A retry after a partial failure must not be able to
+  -- leave a row naming two different things it created.
+  v_blocked := false;
+  begin
+    update public.intelligence_review_items
+       set created_interview_id = v_interview,
+           created_assessment_id = (select id from public.assessments
+                                     where business_unit_id = c_unit limit 1)
+     where id = v_item;
+  exception when others then
+    v_blocked := true;
+  end;
+
+  insert into test.results (section, name, passed, detail)
+  values ('decisions', 'ONE REVIEW ITEM CANNOT NAME TWO CREATED RECORDS',
+          v_blocked, case when v_blocked then 'ok' else 'two created records were accepted' end);
+
+  -- A changed-interpretation decision has to say what it disagrees with.
+  delete from public.intelligence_review_items where idempotency_key = 'test:orphan-change';
+  v_blocked := false;
+  begin
+    insert into public.intelligence_review_items
+      (business_unit_id, intelligence_run_id, email_message_id, event_type,
+       outcome, status, proposed_data, reason_codes, idempotency_key, proposal_fingerprint)
+    values (c_unit, '00000000-0000-4000-9b00-000000000001',
+            '00000000-0000-4000-9800-000000000001',
+            'interview', 'review_required', 'open', '{}'::jsonb,
+            array['interpretation_changed']::decision_reason_code[],
+            'test:orphan-change', 'testfp:orphan-change');
+  exception when others then
+    v_blocked := true;
+  end;
+
+  insert into test.results (section, name, passed, detail)
+  values ('decisions', 'A CHANGED INTERPRETATION MUST NAME WHAT IT SUPERSEDES',
+          v_blocked, case when v_blocked then 'ok' else 'an unlinked change was accepted' end);
+end $$;
+
+-- Every decision carries a server-computed fingerprint. Without one, "is this
+-- the same proposal we already acted on" has no answer.
+select test.check('decisions', 'EVERY DECISION IS FINGERPRINTED',
+  (select count(*) from public.intelligence_review_items
+    where proposal_fingerprint is null or btrim(proposal_fingerprint) = ''), 0::bigint);
+
+select test.check('decisions', 'the fingerprint is not the idempotency key by another name',
+  (select count(*) from public.intelligence_review_items d
+    where d.idempotency_key = d.proposal_fingerprint), 0::bigint);
+
+-- ---------------------------------------------------------------------------
+-- SECTION 58 — A changed interpretation
+--
+-- The failure this guards against is silent: a corrected reading treated as a
+-- duplicate and dropped. So the assertions are about VISIBILITY (it exists, it
+-- is open, it is high priority) and about RESTRAINT (it created nothing, and it
+-- changed nothing that was already there).
+-- ---------------------------------------------------------------------------
+select test.check('decisions', 'A CHANGED READING IS VISIBLE AS ITS OWN DECISION',
+  (select count(*) from public.intelligence_review_items
+    where 'interpretation_changed' = any(reason_codes)
+      and status = 'open' and priority = 'high'), 1::bigint);
+
+select test.check('decisions', 'A CHANGED READING CREATED NOTHING',
+  (select count(*) from public.intelligence_review_items
+    where 'interpretation_changed' = any(reason_codes)
+      and (created_application_id is not null
+           or created_interview_id is not null
+           or created_assessment_id is not null)), 0::bigint);
+
+select test.check('decisions', 'A CHANGED READING NAMES THE DECISION AND RECORD IT DISAGREES WITH',
+  (select count(*) from public.intelligence_review_items d
+     join public.intelligence_review_items p on p.id = d.supersedes_item_id
+    where 'interpretation_changed' = any(d.reason_codes)
+      and d.superseded_fingerprint = p.proposal_fingerprint
+      and d.superseded_record_id = p.created_interview_id
+      and cardinality(d.changed_fields) > 0), 1::bigint);
+
+-- The record already on file is untouched: not edited, not cancelled. This is
+-- the line between "a person is told" and "a machine reconciles".
+-- Asserted against the CHANGED reading's own proposal rather than a hardcoded
+-- date: the claim is "the later reading was not applied", and comparing the
+-- record to the value that reading proposed says exactly that, whatever the
+-- fixture's dates happen to be.
+select test.check('decisions', 'THE EXISTING RECORD WAS NOT AUTOMATICALLY CHANGED',
+  (select count(*) from public.interviews i
+     join public.intelligence_review_items d on d.superseded_record_id = i.id
+    where i.status = 'cancelled'
+       or i.scheduled_at::date = (d.proposed_data ->> 'interview_date')::date), 0::bigint);
+
+-- Both readings survive. The audit trail can answer "what did we propose
+-- first", "what did we propose later" and "what did we do".
+select test.check('decisions', 'BOTH READINGS OF THE SAME EMAIL ARE PRESERVED',
+  (select count(distinct proposal_fingerprint) from public.intelligence_review_items
+    where email_message_id = '00000000-0000-4000-9800-000000000003'
+      and event_type = 'interview'), 2::bigint);
+
+select test.check('decisions', 'the original decision is still approved and still names its record',
+  (select count(*) from public.intelligence_review_items
+    where id = '00000000-0000-4000-9c00-000000000001'
+      and status = 'approved'
+      and created_interview_id = '00000000-0000-4000-9200-000000000031'), 1::bigint);

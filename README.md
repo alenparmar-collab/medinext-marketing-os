@@ -4,7 +4,7 @@ Marketing operations platform for candidate marketing. Replaces an Excel-based
 workflow with an auditable system, and gives each candidate a portal showing
 only their own information.
 
-**Current stage: Build 7B — decisions, review and safe automation.** Interviews and
+**Current stage: Build 7B.1 — hardening.** Interviews and
 assessments now have full scheduling and outcome screens; daily reports exist
 and their figures are **counted from the records rather than typed in**; a
 review queue surfaces records that need a human decision, in neutral language
@@ -20,8 +20,11 @@ Build 7A then added the interpretation layer: a model reads an email and
 records what it made of it, as a **proposal**. Build 7B decides what to do with
 that proposal: a deterministic server-side engine either writes the record,
 sends it to a person, or ignores it — and every write goes through the same
-command a recruiter's form calls. **AI proposes. The server decides. RLS remains
-the final boundary.**
+command a recruiter's form calls. Build 7B.1 then closed two correctness holes
+in that step: two simultaneous approvals could each create a record, and a
+second reading of an email that had changed its mind was treated as a duplicate
+and disappeared. **AI proposes. The server decides. RLS remains the final
+boundary.**
 
 ---
 
@@ -91,6 +94,9 @@ the final boundary.**
 | CRM writes through the existing commands, as the acting user | Done |
 | Automatic records marked unverified, naming the reading they came from | Done |
 | Idempotency per email and event type, and per approval | Done |
+| Atomic approval claim — one review item, one CRM action, under real concurrency | Done |
+| Server-computed proposal fingerprint over material fields | Done |
+| Changed re-interpretations surfaced for review instead of silently dropped | Done |
 | Recruiter workspace ("your day so far") and manager unit workspace | Done |
 | Email ingestion, AI, payments, sales, WhatsApp, mobile | Out of scope |
 
@@ -412,7 +418,7 @@ policies; it exercises them.
 npm run db:test
 ```
 
-423 assertions covering: anonymous access, role resolution, internal scope,
+442 assertions covering: anonymous access, role resolution, internal scope,
 cross-tenant isolation, candidate isolation in both directions on candidates,
 applications, activities, interviews, assessments, notifications, documents and
 the timeline, internal-note isolation, storage-object authorization, write
@@ -448,7 +454,12 @@ permission for the record being created and not merely queue access, an
 automatic record being unverified and a human-approved one verified, the
 original proposal surviving a correction, a proposal in review not counting as a
 CRM event, and every decision reaching the audit log with its content
-redacted.
+redacted; and the claim — that only one caller may ever take it, that a
+candidate and an unauthorized recruiter cannot take one at all, that one cannot
+be taken across tenants, that an approval which was never claimed is refused,
+that one review item cannot name two created records, that a changed
+interpretation must name what it supersedes, and that every decision carries a
+fingerprint.
 
 Where an assertion once hardcoded a count from the seed, it now compares the
 RLS-filtered result against a superuser query implementing the intended rule.
@@ -466,7 +477,7 @@ cannot download candidate B's file" is an assertion, not a claim.
 bash scripts/db-mutation-test.sh
 ```
 
-Forty probes, each deliberately breaking one guarantee and asserting that a
+Forty-five probes, each deliberately breaking one guarantee and asserting that a
 named assertion catches it: candidate isolation on candidates, applications,
 interviews, assessments, notifications and stored files; internal notes staying
 out of the portal; notification idempotency; cross-candidate attachment;
@@ -489,7 +500,11 @@ content staying out of the audit log; the proposal queue needing an explicit
 capability; one tenant's decisions staying out of another's queue; one decision
 per email and event type; a decision never matching a candidate in another
 tenant; approval needing the permission for the record it creates; every
-decision reaching the audit log; and decided content staying out of it.
+decision reaching the audit log; decided content staying out of it; the claim
+being takeable only once; claiming going through the queue's permission rather
+than around it (a `SECURITY DEFINER` on that one function is enough to lose the
+policy); an approval having gone through the claim; one review item producing
+one record; and a changed interpretation naming what it disagrees with.
 
 A green suite that cannot go red is worthless. Several of these probes have
 failed on first run, and every time they exposed a weak *test* rather than a
@@ -500,6 +515,31 @@ satisfied by audit rows the seed had already written, so removing the audit
 trigger changed nothing it looked at. Both were rewritten to create their own
 fixture and assert against it. Run this after any policy
 change.
+
+**Two more, broken on purpose — Build 7B.1.** The brief asked for both, and
+both were run:
+
+*A. Remove the atomic claim.* Replacing `claim_proposal` with Build 7B's shape —
+read the status, and if it looks open, say yes — and re-running the twelve-way
+approval race produced **twelve interviews from one review item**. This one is
+not a manual exercise: it is phase E of `npm run db:concurrency`, so it runs
+every time, and phase D is only meaningful because phase E fails.
+
+*B. Disable changed-proposal detection.* Making `fingerprintProposal` hash only
+the event type — so every reading of an email fingerprints identically — turned
+**15 unit tests red**, among them:
+
+```
+× the proposal fingerprint > CHANGES WHEN THE APPOINTMENT MOVES
+× a materially changed reading > C. a changed interview DATE goes to review
+× a materially changed reading > D. A CHANGED CANDIDATE GOES TO REVIEW
+× a materially changed reading > E. A CHANGED ASSESSMENT DEADLINE GOES TO REVIEW
+× idempotency > A CHANGED READING OF AN APPROVED EMAIL BECOMES A REVIEW, NOT A SECOND RECORD
+```
+
+Every one of them failed the same way: the changed reading was reported as
+`ignore`, which is precisely the silent-loss failure Build 7B.1 exists to
+prevent. Restoring the canonicalised hash returned all 377 unit tests to green.
 
 **One authorization condition, broken on purpose — Build 7B.** Removing the
 capability and tenant conditions from the proposal queue's SELECT policy, so it
@@ -549,13 +589,33 @@ makes the first two worth reading — that restoring the unguarded allocator mak
 the same race fail. A concurrency test that cannot detect the bug it was written
 for is decoration.
 
+Build 7B.1 added two more phases to the same script, for the race that mattered
+more. Twelve sessions approve the SAME review item at once, each doing exactly
+what the server does — claim, and only then write:
+
+```
+==> Phase D: 12 concurrent approvals of ONE review item
+  PASS  exactly one of 12 approvals won the claim
+  PASS  exactly one CRM record was created
+  PASS  exactly one approval was recorded, naming its record
+  PASS  the audit log holds exactly one resulting action
+  PASS  the losers stopped at the claim, before any CRM write
+
+==> Phase E: the same race against a non-atomic claim
+  PASS  the non-atomic claim creates 12 records from one review item
+```
+
+Phase E is Build 7B's exact shape — read the status, and if it looks open,
+proceed — and it produces **twelve interviews from one proposal**. That is the
+bug this build exists to close, demonstrated rather than described.
+
 ### 2. Unit tests
 
 ```bash
 npm test
 ```
 
-341 assertions over validation schemas, the config/SQL sync, the Build 5 and 5.1
+377 assertions over validation schemas, the config/SQL sync, the Build 5 and 5.1
 guarantees, the email layer, and the interpretation pipeline — the latter run
 for real against an in-memory database and a fixture provider, across twenty
 fictional email fixtures including a prompt-injection attempt — including the ingestion service run for real
@@ -576,7 +636,12 @@ time with no stated zone is never guessed at, that a redelivered email produces
 one decision and one record, that a second approval is refused, that a failed
 CRM write leaves the proposal open rather than approved, and that the privileged
 client is used for bookkeeping only — never for the CRM write, which always runs
-as the acting user.
+as the acting user; that the same material proposal fingerprints identically
+however the JSON is ordered or capitalised, that a changed date, time, zone,
+candidate, company or deadline fingerprints differently, that the claim is
+taken before the CRM write and released only when that write failed, and that
+approving twice is refused for an application, an interview and an assessment
+alike.
 
 ### 3. HTTP smoke test
 
@@ -878,7 +943,20 @@ sequence since.
     interview the model proposes at a time that matches nothing on record looks
     new, even if it is a reschedule the recruiter has not entered. That case is
     sent to review with a "possible reschedule" reason rather than guessed at.
-30. **Nothing runs on its own.** Interpretation and decision are both triggered
+30. **The claim is per review item, not per candidate.** Two different emails
+    proposing the same interview are two proposals, and both can be approved.
+    Duplicate detection catches the common shape of that (an interview already
+    recorded at the same moment) and sends it to review, but it is a check, not
+    a constraint.
+31. **A changed interpretation is detected against the LATEST decision for that
+    email and event type**, not against every historical one. Reading an email
+    three times with three different answers produces a chain, and each link
+    names the one before it.
+32. **The fingerprint's material-field list is a judgement call.** A field left
+    out of it is a change that will not raise a conflict. The list is in one
+    file, is asserted field-by-field in the tests, and should be revisited
+    whenever a CRM command starts using a field it did not before.
+33. **Nothing runs on its own.** Interpretation and decision are both triggered
     by a request. There is no queue, no scheduler, and no polling — so an email
     that arrives at 2am is decided when somebody asks for it to be, not before.
 
@@ -1151,6 +1229,36 @@ write fails, the item stays open and retryable and is never marked approved. If
 it succeeds and the bookkeeping fails twice, the caller is told *what was
 created, by id* — because a reviewer told only "it failed" is the person most
 likely to create it a second time.
+
+**One review item, one CRM action.** Build 7B read the item's status, checked
+it was open, and then wrote. Between those two steps another request can do the
+same thing, so two tabs, two reviewers or one double-click could each create a
+record. Approving now goes through `claim_proposal`, whose entire body is a
+single `update ... where claimed_at is null`: under READ COMMITTED the losers
+block on the winner's row lock, re-evaluate that predicate against the committed
+row, match nothing, and stop before reaching any CRM command. A failed CRM write
+releases the claim so the item is workable again; a failed *bookkeeping* write
+deliberately does NOT, because holding the claim is what stops a retry from
+walking back through the write and creating the record twice.
+
+**A changed reading is a question, not a duplicate.** Idempotency keyed on
+(email, event type) collapses a redelivery, which is right, and collapses a
+correction, which is not — a second reading that moved the interview to another
+day would have vanished. The key now includes a server-computed **fingerprint**:
+a sha256 over the *material* fields of the proposal, canonicalised first, so key
+order, capitalisation, a re-run timestamp or a changed interviewer name all
+fingerprint identically while a changed date, time, zone, candidate, company or
+deadline does not. Same fingerprint, same key, idempotent. Different
+fingerprint: its own decision, always held for a person, carrying
+`interpretation_changed`, naming the earlier decision, the earlier fingerprint
+and the record already on file.
+
+**Nothing is reconciled automatically.** When the latest reading says the 16th
+and the record says the 15th, the existing interview is not edited, not
+cancelled, and not duplicated. A person is shown both readings and the fields
+that moved, and decides. This is not an automatic reconciliation system, and the
+database holds the line: an approval that was never claimed is refused, and one
+review item cannot name two created records.
 
 **What Build 7B still does not do.** It sends no email, no WhatsApp and no SMS;
 notifications are in-app only. It creates no candidate from an unknown sender.

@@ -22,12 +22,27 @@ export type ErrorCode =
 export class AppError extends Error {
   readonly code: ErrorCode;
   readonly fieldErrors?: Record<string, string[]>;
+  /**
+   * Structured facts about a failure, for the cases where a sentence is not
+   * enough to recover from. Used by PARTIAL_FAILURE, which has to say exactly
+   * which record was created before the bookkeeping failed — a message alone
+   * leaves the reviewer to guess, and the wrong guess is a duplicate.
+   *
+   * Never rendered raw to a candidate; the portal shows USER_FACING_MESSAGE.
+   */
+  readonly details?: Record<string, string | null>;
 
-  constructor(code: ErrorCode, message: string, fieldErrors?: Record<string, string[]>) {
+  constructor(
+    code: ErrorCode,
+    message: string,
+    fieldErrors?: Record<string, string[]>,
+    details?: Record<string, string | null>,
+  ) {
     super(message);
     this.name = 'AppError';
     this.code = code;
     if (fieldErrors) this.fieldErrors = fieldErrors;
+    if (details) this.details = details;
   }
 }
 

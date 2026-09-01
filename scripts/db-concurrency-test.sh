@@ -22,6 +22,11 @@
 #   PHASE C  Non-vacuity. Restore the unguarded max+1 allocator and re-run
 #            phase A: it must break. A concurrency test that cannot detect the
 #            bug it was written for is decoration.
+#   PHASE D  BUILD 7B.1. Twelve sessions approve the SAME review item at once.
+#            Exactly one may claim it, exactly one CRM record may exist, and
+#            exactly one approval may be recorded.
+#   PHASE E  Non-vacuity again. Replace the atomic claim with the read-then-
+#            write it replaced, and watch the same race create duplicates.
 #
 # Usage:  ./scripts/db-concurrency-test.sh
 # ---------------------------------------------------------------------------
@@ -240,6 +245,206 @@ if [[ "${RACED}" == "1" ]]; then
 else
   fail "the unguarded allocator loses the race" \
     "three rounds of ${WORKERS} concurrent inserts produced no collision; phase A may be vacuous"
+fi
+
+# ---------------------------------------------------------------------------
+# PHASES D & E — ONE REVIEW ITEM, ONE CRM ACTION.
+#
+# The race Build 7B could lose: two reviewers, two tabs, or one double-click
+# both read `status = open`, both pass the check, and both create an interview.
+# The fix is `claim_proposal`, whose entire body is one atomic
+# `update ... where claimed_at is null`.
+#
+# Each worker below does exactly what the server does, in order: claim, and only
+# if the claim came back, write the CRM record and record the approval. The
+# workers run as a real manager through RLS, so the queue policy is in the path
+# too.
+# ---------------------------------------------------------------------------
+# The item and the marker differ per phase, so nothing has to be deleted
+# between them: the interview created in phase D has history rows, activities
+# and notifications hanging off it, and tearing that down would test the
+# fixture rather than the claim.
+approval_race() {
+  local item="$1" marker="$2" gate i
+  gate="$(psql_run "-tA -d ${CON_DB} -c 'select extract(epoch from clock_timestamp()) + 3'" | tr -d '[:space:]')"
+  rm -f "${WORK}"/worker_*.out "${WORK}"/worker_*.rc
+
+  cat > "${WORK}/approve.sql" <<SQL
+select pg_sleep(greatest(0, ${gate} - extract(epoch from clock_timestamp())::float8));
+
+select set_config('request.jwt.claims',
+  json_build_object('sub', '${MANAGER}', 'role', 'authenticated')::text, false);
+set role authenticated;
+
+-- Claim, then act only if the claim came back. This is the server's sequence,
+-- and the whole question is whether more than one worker gets past line one.
+do \$\$
+declare
+  v_claim uuid;
+  v_new   uuid;
+begin
+  v_claim := public.claim_proposal('${item}');
+  if v_claim is null then
+    raise exception 'lost the claim' using errcode = 'lock_not_available';
+  end if;
+
+  insert into public.interviews
+    (business_unit_id, candidate_id, application_id, interview_round, scheduled_at,
+     time_zone, status, source_type, source_reference, created_by)
+  values ('${UNIT}', '${CANDIDATE}', '${APPLICATION}', 9, now() + interval '7 days',
+          'Europe/London', 'scheduled', 'email_event', '${marker}', '${MANAGER}')
+  returning id into v_new;
+
+  update public.intelligence_review_items
+     set status = 'approved', reviewed_by = '${MANAGER}', reviewed_at = now(),
+         created_interview_id = v_new
+   where id = '${item}';
+end
+\$\$;
+SQL
+  chmod 644 "${WORK}/approve.sql"
+
+  for ((i = 0; i < WORKERS; i++)); do
+    (
+      psql_run "-q -v ON_ERROR_STOP=1 -d ${CON_DB} -f ${WORK}/approve.sql" \
+        >"${WORK}/worker_${i}.out" 2>&1
+      echo "$?" > "${WORK}/worker_${i}.rc"
+    ) &
+  done
+  wait
+}
+
+# Fixtures for the approval race: a real open item in the EU unit, and a manager
+# who holds both proposal.review and interview.manage.
+MANAGER='00000000-0000-4000-8000-000000000002'
+read -r CANDIDATE APPLICATION <<<"$(psql_run "-tA -F' ' -d ${CON_DB} -c \"
+  select a.candidate_id, a.id from public.applications a
+   where a.business_unit_id = '${UNIT_ID}' limit 1\"" | tr -d '\r')"
+UNIT="${UNIT_ID}"
+
+seed_open_item() {
+  local item="$1" key="$2"
+  psql_run "-q -v ON_ERROR_STOP=1 -d ${CON_DB} -c \"
+    insert into public.intelligence_review_items
+      (id, business_unit_id, intelligence_run_id, email_message_id, event_type,
+       outcome, status, proposed_data, idempotency_key, proposal_fingerprint)
+    values ('${item}', '${UNIT_ID}',
+            '00000000-0000-4000-9b00-000000000001',
+            '00000000-0000-4000-9800-000000000001',
+            'interview', 'review_required', 'open', '{}'::jsonb,
+            '${key}', '${key}');\"" >/dev/null 2>&1
+}
+ITEM_D='00000000-0000-4000-9c00-0000000000fd'
+ITEM_E='00000000-0000-4000-9c00-0000000000fe'
+
+echo
+echo "==> Phase D: ${WORKERS} concurrent approvals of ONE review item"
+seed_open_item "${ITEM_D}" 'race:approval-d'
+approval_race "${ITEM_D}" 'probe-approval-d'
+
+WON="$(winners)"
+INTERVIEWS="$(psql_run "-tA -d ${CON_DB} -c \"
+  select count(*) from public.interviews where source_reference = 'probe-approval-d'\"" | tr -d '[:space:]')"
+APPROVED="$(psql_run "-tA -d ${CON_DB} -c \"
+  select count(*) from public.intelligence_review_items
+   where id = '${ITEM_D}' and status = 'approved' and created_interview_id is not null\"" | tr -d '[:space:]')"
+# Counted as APPROVALS, not as status changes: the claim is itself a status
+# change (open -> in_review) and is audited too, which is correct and is not
+# what "one resulting action" means.
+AUDITED="$(psql_run "-tA -d ${CON_DB} -c \"
+  select count(*) from audit.audit_logs
+   where entity_type = 'intelligence_review_items' and entity_id = '${ITEM_D}'
+     and action = 'update' and new_data ->> 'status' = 'approved'\"" | tr -d '[:space:]')"
+
+if [[ "${WON}" == "1" ]]; then
+  pass "exactly one of ${WORKERS} approvals won the claim"
+else
+  errors
+  fail "exactly one of ${WORKERS} approvals won the claim" \
+    "${WON} won: $(grep -i 'ERROR' "${WORK}/errors.txt" | head -1)"
+fi
+
+if [[ "${INTERVIEWS}" == "1" ]]; then
+  pass "exactly one CRM record was created"
+else
+  fail "exactly one CRM record was created" "found ${INTERVIEWS} interviews"
+fi
+
+if [[ "${APPROVED}" == "1" ]]; then
+  pass "exactly one approval was recorded, naming its record"
+else
+  fail "exactly one approval was recorded, naming its record" "found ${APPROVED}"
+fi
+
+if [[ "${AUDITED}" == "1" ]]; then
+  pass "the audit log holds exactly one resulting action"
+else
+  fail "the audit log holds exactly one resulting action" "found ${AUDITED} audit rows"
+fi
+
+errors
+if grep -q 'lost the claim' "${WORK}/errors.txt"; then
+  pass "the losers stopped at the claim, before any CRM write"
+else
+  fail "the losers stopped at the claim, before any CRM write" \
+    "$(grep -i 'ERROR' "${WORK}/errors.txt" | head -1)"
+fi
+
+# ---------------------------------------------------------------------------
+# PHASE E — the same race against the read-then-write this replaced.
+# ---------------------------------------------------------------------------
+echo
+echo "==> Phase E: the same race against a non-atomic claim"
+
+cat > "${WORK}/unguarded_claim.sql" <<'SQL'
+-- Build 7B's shape, exactly: read the status, and if it looks open, say yes.
+-- Nothing is written, because 7B wrote nothing to the item until AFTER the CRM
+-- record had been created — which is why the review-status guard could not save
+-- it. The guard refuses the second bookkeeping; the second interview already
+-- exists by then.
+--
+-- pg_sleep does not create the race, it only makes the existing window wide
+-- enough to observe every run instead of one in fifty.
+create or replace function public.claim_proposal(p_item_id uuid)
+returns uuid
+language plpgsql
+security invoker
+set search_path = ''
+as $$
+declare v_status text;
+begin
+  select status into v_status from public.intelligence_review_items where id = p_item_id;
+  if v_status not in ('open', 'in_review') then
+    return null;
+  end if;
+  perform pg_sleep(0.05);
+  return p_item_id;
+end;
+$$;
+SQL
+chmod 644 "${WORK}/unguarded_claim.sql"
+
+# The constraints are part of the protection, so the probe has to remove them
+# too — otherwise the second writer is refused by a check rather than by the
+# claim, and phase D would look sound with no claim at all.
+psql_run "-q -v ON_ERROR_STOP=1 -d ${CON_DB} -c \"
+  alter table public.intelligence_review_items
+    drop constraint intelligence_review_items_approval_was_claimed\"" >/dev/null 2>&1
+psql_run "-q -v ON_ERROR_STOP=1 -d ${CON_DB} -f ${WORK}/unguarded_claim.sql" >/dev/null 2>&1
+
+seed_open_item "${ITEM_E}" 'race:approval-e'
+approval_race "${ITEM_E}" 'probe-approval-e'
+
+WON="$(winners)"
+INTERVIEWS="$(psql_run "-tA -d ${CON_DB} -c \"
+  select count(*) from public.interviews where source_reference = 'probe-approval-e'\"" | tr -d '[:space:]')"
+
+if [[ "${INTERVIEWS}" -gt 1 ]]; then
+  pass "the non-atomic claim creates ${INTERVIEWS} records from one review item"
+else
+  errors
+  fail "the non-atomic claim loses the race" \
+    "${WON} winners and ${INTERVIEWS} records — phase D may be vacuous: $(grep -i 'ERROR' "${WORK}/errors.txt" | head -1)"
 fi
 
 admin_run "dropdb --if-exists ${CON_DB}" >/dev/null 2>&1 || true

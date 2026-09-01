@@ -47,6 +47,45 @@ export class FakeDb {
     return new FakeQuery(this, table);
   }
 
+  /**
+   * The database functions the services call.
+   *
+   * `claim_proposal` is modelled rather than stubbed, because the guarantee it
+   * carries — exactly one claim per item — is the one the pipeline depends on.
+   * A stub that always succeeded would make a double-approval test pass while
+   * the real code raced. This cannot reproduce true concurrency (JavaScript is
+   * single-threaded here, and the real proof is in
+   * `scripts/db-concurrency-test.sh`); what it does reproduce is the LATCH: the
+   * second claim of the same row returns null exactly as Postgres would.
+   */
+  async rpc(fn: string, args: Record<string, unknown>) {
+    if (fn === 'claim_proposal' || fn === 'release_proposal_claim') {
+      const row = this.rows('intelligence_review_items').find((r) => r.id === args.p_item_id);
+      if (!row) return { data: null, error: null };
+
+      if (fn === 'claim_proposal') {
+        const claimable =
+          (row.claimed_at ?? null) === null &&
+          (row.status === 'open' || row.status === 'in_review');
+        if (!claimable) return { data: null, error: null };
+        row.status = 'in_review';
+        row.claimed_at = new Date().toISOString();
+        row.claimed_by = args.p_actor_id ?? 'fake-actor';
+        return { data: row.id, error: null };
+      }
+
+      if (row.status !== 'in_review' || (row.claimed_at ?? null) === null) {
+        return { data: null, error: null };
+      }
+      row.status = 'open';
+      row.claimed_at = null;
+      row.claimed_by = null;
+      return { data: row.id, error: null };
+    }
+
+    return { data: null, error: null };
+  }
+
   nextId(): string {
     this.sequence += 1;
     return `fake-id-${this.sequence}`;

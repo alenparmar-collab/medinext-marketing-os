@@ -359,15 +359,27 @@ describe('nothing to do', () => {
  * Reprocessing — §22
  * ========================================================================= */
 describe('reprocessing an email that was already acted on', () => {
+  // The prior decision is produced by the engine itself rather than written by
+  // hand, because that is the only way its fingerprint is the one production
+  // would have stored. A hand-written prior would let this pass while the real
+  // comparison compared two shapes that never match.
+  const first = decide(input({ extracted: COMPLETE_INTERVIEW }));
+
+  const prior = {
+    itemId: 'item-1',
+    status: 'approved',
+    fingerprint: first.fingerprint,
+    proposedData: first.proposedData,
+    candidateId: CANDIDATE.id,
+    createdRecordId: 'interview-123',
+    createdRecordKind: 'interview' as const,
+  };
+
   it('does nothing when the reading has not changed', () => {
-    const decision = decide(
-      input({
-        extracted: COMPLETE_INTERVIEW,
-        alreadyActioned: { status: 'approved', approvedData: COMPLETE_INTERVIEW },
-      }),
-    );
+    const decision = decide(input({ extracted: COMPLETE_INTERVIEW, alreadyActioned: prior }));
 
     expect(decision.outcome).toBe('ignore');
+    expect(decision.fingerprint).toBe(first.fingerprint);
   });
 
   it('RAISES A CONFLICT WHEN THE NEW READING DISAGREES', () => {
@@ -375,13 +387,16 @@ describe('reprocessing an email that was already acted on', () => {
     const decision = decide(
       input({
         extracted: { ...COMPLETE_INTERVIEW, interview_date: '2026-09-16' },
-        alreadyActioned: { status: 'approved', approvedData: COMPLETE_INTERVIEW },
+        alreadyActioned: prior,
       }),
     );
 
     expect(decision.outcome).toBe('review_required');
-    expect(decision.reasonCodes).toContain('conflict_detected');
+    expect(decision.reasonCodes).toContain('interpretation_changed');
     expect(decision.priority).toBe('high');
+    // It names the record already on file rather than proposing a second one.
+    expect(decision.relatedRecordId).toBe('interview-123');
+    expect(decision.interpretationChange?.existingRecordId).toBe('interview-123');
   });
 });
 

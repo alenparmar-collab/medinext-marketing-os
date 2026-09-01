@@ -41,7 +41,8 @@ insert into public.intelligence_review_items (
   id, business_unit_id, intelligence_run_id, email_message_id,
   event_type, outcome, status, priority, reason_codes, explanation,
   proposed_candidate_id, proposed_data, candidate_match_confidence, event_confidence,
-  final_data, created_interview_id, idempotency_key, reviewed_at
+  final_data, created_interview_id, idempotency_key, reviewed_at,
+  proposal_fingerprint, claimed_by, claimed_at
 ) values (
   '00000000-0000-4000-9c00-000000000001', '00000000-0000-4000-9000-000000000001',
   '00000000-0000-4000-9b00-000000000002', '00000000-0000-4000-9800-000000000003',
@@ -52,7 +53,15 @@ insert into public.intelligence_review_items (
   0.950, 0.970,
   '{"company":"Northwind Clinical","job_title":"Clinical Data Manager","time_zone":"Europe/London"}'::jsonb,
   '00000000-0000-4000-9200-000000000031',
-  '00000000-0000-4000-9800-000000000003:interview', now() - interval '15 minutes'
+  '00000000-0000-4000-9800-000000000003:interview:seedfp-interview-northwind',
+  now() - interval '15 minutes',
+  -- A demo stand-in for the sha256 the pipeline computes. Readable on purpose:
+  -- a fixture whose value explains itself is worth more here than a real hash.
+  'seedfp-interview-northwind',
+  -- Nobody reviewed it, but the claim is still recorded: an automatic approval
+  -- claims itself, which is what makes "an approval was claimed" true for
+  -- automation as well as for people.
+  '00000000-0000-4000-8000-000000000002', now() - interval '15 minutes'
 ) on conflict (id) do nothing;
 
 -- ---------------------------------------------------------------------------
@@ -62,7 +71,7 @@ insert into public.intelligence_review_items (
   id, business_unit_id, intelligence_run_id, email_message_id,
   event_type, outcome, status, priority, reason_codes, explanation,
   proposed_candidate_id, proposed_data, candidate_match_confidence, event_confidence,
-  idempotency_key
+  idempotency_key, proposal_fingerprint
 ) values (
   '00000000-0000-4000-9c00-000000000002', '00000000-0000-4000-9000-000000000001',
   '00000000-0000-4000-9b00-000000000003', '00000000-0000-4000-9800-000000000002',
@@ -73,7 +82,8 @@ insert into public.intelligence_review_items (
   '00000000-0000-4000-a000-000000000001',
   '{"company":"Northwind Clinical","response_summary":"Asks for three windows of availability."}'::jsonb,
   0.350, 0.910,
-  '00000000-0000-4000-9800-000000000002:recruiter_response'
+  '00000000-0000-4000-9800-000000000002:recruiter_response:seedfp-response-northwind',
+  'seedfp-response-northwind'
 ) on conflict (id) do nothing;
 
 -- ---------------------------------------------------------------------------
@@ -101,7 +111,8 @@ insert into public.intelligence_review_items (
   event_type, outcome, status, priority, reason_codes, explanation,
   proposed_candidate_id, proposed_data, corrected_data, final_data,
   candidate_match_confidence, event_confidence,
-  created_assessment_id, reviewed_by, reviewed_at, decision_notes, idempotency_key
+  created_assessment_id, reviewed_by, reviewed_at, decision_notes, idempotency_key,
+  proposal_fingerprint, claimed_by, claimed_at
 ) values (
   '00000000-0000-4000-9c00-000000000003', '00000000-0000-4000-9000-000000000001',
   '00000000-0000-4000-9b00-000000000004', '00000000-0000-4000-9800-000000000004',
@@ -116,7 +127,9 @@ insert into public.intelligence_review_items (
   '00000000-0000-4000-9300-000000000031',
   '00000000-0000-4000-8000-000000000002', now() - interval '10 minutes',
   'Named the assessment and the deadline from the attached brief.',
-  '00000000-0000-4000-9800-000000000004:assessment'
+  '00000000-0000-4000-9800-000000000004:assessment:seedfp-assessment-halcyon',
+  'seedfp-assessment-halcyon',
+  '00000000-0000-4000-8000-000000000002', now() - interval '11 minutes'
 ) on conflict (id) do nothing;
 
 -- ---------------------------------------------------------------------------
@@ -126,7 +139,7 @@ insert into public.intelligence_review_items (
   id, business_unit_id, intelligence_run_id, email_message_id,
   event_type, outcome, status, priority, reason_codes, explanation,
   proposed_data, event_confidence,
-  reviewed_by, reviewed_at, decision_notes, idempotency_key
+  reviewed_by, reviewed_at, decision_notes, idempotency_key, proposal_fingerprint
 ) values (
   '00000000-0000-4000-9c00-000000000004', '00000000-0000-4000-9000-000000000001',
   '00000000-0000-4000-9b00-000000000001', '00000000-0000-4000-9800-000000000001',
@@ -137,7 +150,43 @@ insert into public.intelligence_review_items (
   0.940,
   '00000000-0000-4000-8000-000000000002', now() - interval '5 minutes',
   'Acknowledgement for an application we already hold. Nothing to create.',
-  '00000000-0000-4000-9800-000000000001:application'
+  '00000000-0000-4000-9800-000000000001:application:seedfp-application-northwind',
+  'seedfp-application-northwind'
+) on conflict (id) do nothing;
+
+-- ---------------------------------------------------------------------------
+-- BUILD 7B.1 — the same email, read again, saying something different.
+--
+-- The interview above was written automatically for the 15th. A later reading
+-- of the SAME message puts it on the 16th. That is not a duplicate and it is
+-- not a new interview: it is a disagreement with something already done, so it
+-- lands as its own decision, held for a person, naming the record already on
+-- file. Nothing about interview 9200-...31 is edited or cancelled.
+-- ---------------------------------------------------------------------------
+insert into public.intelligence_review_items (
+  id, business_unit_id, intelligence_run_id, email_message_id,
+  event_type, outcome, status, priority, reason_codes, explanation,
+  proposed_candidate_id, proposed_data, candidate_match_confidence, event_confidence,
+  idempotency_key, proposal_fingerprint,
+  supersedes_item_id, superseded_fingerprint, superseded_record_id, superseded_record_kind,
+  changed_fields
+) values (
+  '00000000-0000-4000-9c00-000000000006', '00000000-0000-4000-9000-000000000001',
+  '00000000-0000-4000-9b00-000000000002', '00000000-0000-4000-9800-000000000003',
+  'interview', 'review_required', 'open', 'high',
+  array['interpretation_changed']::decision_reason_code[],
+  'The latest interpretation of this email differs from the proposal previously acted upon '
+  '(when). Nothing already on file has been changed. A person should decide which reading '
+  'is right.',
+  '00000000-0000-4000-a000-000000000001',
+  '{"company":"Northwind Clinical","job_title":"Clinical Data Manager",'
+  '"time_zone":"Europe/London","interview_date":"2026-09-16","interview_time":"15:00"}'::jsonb,
+  0.950, 0.960,
+  '00000000-0000-4000-9800-000000000003:interview:seedfp-interview-northwind-16th',
+  'seedfp-interview-northwind-16th',
+  '00000000-0000-4000-9c00-000000000001', 'seedfp-interview-northwind',
+  '00000000-0000-4000-9200-000000000031', 'interview',
+  array['when']
 ) on conflict (id) do nothing;
 
 -- ---------------------------------------------------------------------------
@@ -148,7 +197,7 @@ select set_config('app.actor_id', '00000000-0000-4000-8000-000000000001', false)
 insert into public.intelligence_review_items (
   id, business_unit_id, intelligence_run_id, email_message_id,
   event_type, outcome, status, priority, reason_codes, explanation,
-  proposed_data, event_confidence, idempotency_key
+  proposed_data, event_confidence, idempotency_key, proposal_fingerprint
 ) values (
   '00000000-0000-4000-9c00-000000000005', '00000000-0000-4000-9000-000000000002',
   '00000000-0000-4000-9b00-000000000006', '00000000-0000-4000-9800-000000000006',
@@ -156,7 +205,8 @@ insert into public.intelligence_review_items (
   array['unsupported_event']::decision_reason_code[],
   'There is no record to create; a person decides whether it means anything.',
   '{"company":"Kansai Bio"}'::jsonb, 0.930,
-  '00000000-0000-4000-9800-000000000006:recruiter_response'
+  '00000000-0000-4000-9800-000000000006:recruiter_response:seedfp-response-kansai',
+  'seedfp-response-kansai'
 ) on conflict (id) do nothing;
 
 select set_config('app.actor_id', '', false);

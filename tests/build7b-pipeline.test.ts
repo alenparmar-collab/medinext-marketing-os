@@ -23,6 +23,7 @@ const state = vi.hoisted(() => ({
   calls: [] as { command: string; input: any; actor: any; provenance: any }[],
   failNextCrmWrite: false,
   failBookkeeping: 0,
+  beforeCrmWrite: null as null | (() => void),
 }));
 
 vi.mock('@/lib/supabase/server', () => ({
@@ -47,6 +48,7 @@ vi.mock('@/server/privileged/service-client', () => ({
 function stubCommand(command: string, id: string) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return async (input: any, actor: any, provenance?: any) => {
+    state.beforeCrmWrite?.();
     if (state.failNextCrmWrite) {
       state.failNextCrmWrite = false;
       throw new Error('the CRM write failed');
@@ -184,6 +186,7 @@ beforeEach(() => {
   state.calls = [];
   state.failNextCrmWrite = false;
   state.failBookkeeping = 0;
+  state.beforeCrmWrite = null;
   seed();
 });
 
@@ -211,9 +214,12 @@ describe('idempotency', () => {
     expect(crmCalls().filter((c) => c.command === 'createInterview')).toHaveLength(1);
   });
 
-  it('THE KEY IS THE EMAIL AND EVENT TYPE, NOT A TIMESTAMP', async () => {
+  it('THE KEY IS THE EMAIL, THE EVENT AND THE PROPOSAL — NEVER A TIMESTAMP', async () => {
     await evaluateIntelligenceRun('run-1', ACTOR);
-    expect(item().idempotency_key).toBe(`${EMAIL}:interview`);
+    // The fingerprint is part of the key so that a reading which says something
+    // DIFFERENT gets its own row instead of collapsing onto the first one.
+    expect(item().idempotency_key).toBe(`${EMAIL}:interview:${item().proposal_fingerprint}`);
+    expect(String(item().proposal_fingerprint)).toMatch(/^[0-9a-f]{64}$/);
     expect(String(item().idempotency_key)).not.toMatch(/\d{4}-\d{2}-\d{2}T/);
   });
 
@@ -238,12 +244,12 @@ describe('idempotency', () => {
     expect(crmCalls().filter((c) => c.command === 'createInterview')).toHaveLength(1);
   });
 
-  it('a rejected proposal cannot be approved by a later reading', async () => {
+  it('a rejected proposal is not revived by re-reading the same thing', async () => {
     seed({ extracted: VAGUE, confidence: 0.7 });
     await evaluateIntelligenceRun('run-1', ACTOR);
     await resolveProposal({ reviewItemId: String(item().id), status: 'rejected' }, ACTOR);
 
-    addSecondRun();
+    addSecondRun(VAGUE, 0.7);
     await evaluateIntelligenceRun('run-2', ACTOR);
 
     expect(items()).toHaveLength(1);
@@ -255,12 +261,44 @@ describe('idempotency', () => {
     await evaluateIntelligenceRun('run-1', ACTOR);
     expect(item().status).toBe('approved');
 
-    addSecondRun({ ...COMPLETE, interview_time: '16:00' });
+    // The same reading again: same material proposal, same fingerprint, same
+    // key. One decision, one interview.
+    addSecondRun(COMPLETE);
     const second = await evaluateIntelligenceRun('run-2', ACTOR);
 
     expect(second.status).toBe('approved');
     expect(items()).toHaveLength(1);
     expect(crmCalls().filter((c) => c.command === 'createInterview')).toHaveLength(1);
+  });
+
+  it('A CHANGED READING OF AN APPROVED EMAIL BECOMES A REVIEW, NOT A SECOND RECORD', async () => {
+    await evaluateIntelligenceRun('run-1', ACTOR);
+    const original = { ...item() };
+
+    // An hour later, and materially different: a new appointment time.
+    addSecondRun({ ...COMPLETE, interview_time: '16:00' });
+    const second = await evaluateIntelligenceRun('run-2', ACTOR);
+
+    // A second decision exists — the disagreement is visible rather than
+    // swallowed — and it created nothing.
+    expect(items()).toHaveLength(2);
+    expect(second.outcome).toBe('review_required');
+    expect(second.reasonCodes).toContain('interpretation_changed');
+    expect(second.createdRecordId).toBeNull();
+    expect(crmCalls().filter((c) => c.command === 'createInterview')).toHaveLength(1);
+
+    const conflict = items()[1] as Record<string, unknown>;
+    expect(conflict.status).toBe('open');
+    expect(conflict.priority).toBe('high');
+    expect(conflict.supersedes_item_id).toBe(original.id);
+    expect(conflict.superseded_fingerprint).toBe(original.proposal_fingerprint);
+    expect(conflict.superseded_record_id).toBe(original.created_interview_id);
+    expect(conflict.changed_fields).toContain('when');
+
+    // And the record already on file is untouched: not edited, not cancelled.
+    expect(item().created_interview_id).toBe(original.created_interview_id);
+    expect(item().status).toBe('approved');
+    expect(item().proposed_data).toEqual(original.proposed_data);
   });
 });
 
@@ -490,4 +528,175 @@ describe('when something fails', () => {
 
     expect(item().status).toBe('approved');
   });
+});
+
+/* =========================================================================
+ * BUILD 7B.1 — THE CLAIM
+ *
+ * True concurrency lives in scripts/db-concurrency-test.sh, where twelve real
+ * psql sessions race for the same row. What is asserted here is the contract
+ * the pipeline holds around that claim: it is taken before the CRM write, it is
+ * released when the write fails, it is NOT released when the write succeeded,
+ * and nothing reaches a CRM command without it.
+ * ========================================================================= */
+describe('the approval claim', () => {
+  const APPROVAL = {
+    application_id: APPLICATION,
+    scheduled_at: '2999-01-15T19:00:00.000Z',
+    time_zone: 'America/New_York',
+  };
+
+  async function openItem() {
+    seed({ extracted: VAGUE, confidence: 0.7 });
+    await evaluateIntelligenceRun('run-1', ACTOR);
+    return String(item().id);
+  }
+
+  it('IS TAKEN BEFORE THE CRM WRITE, NOT AFTER', async () => {
+    const id = await openItem();
+    let claimedWhenCalled: unknown = 'never called';
+    state.beforeCrmWrite = () => {
+      claimedWhenCalled = item().claimed_at;
+    };
+
+    await approveProposal({ reviewItemId: id, corrections: APPROVAL }, ACTOR);
+
+    expect(claimedWhenCalled).not.toBe('never called');
+    expect(claimedWhenCalled).toBeTruthy();
+  });
+
+  it('A SECOND APPROVAL FINDS THE ITEM CLAIMED AND WRITES NOTHING', async () => {
+    const id = await openItem();
+    await approveProposal({ reviewItemId: id, corrections: APPROVAL }, ACTOR);
+
+    await expect(approveProposal({ reviewItemId: id, corrections: APPROVAL }, ACTOR)).rejects.toMatchObject(
+      { code: 'CONFLICT' },
+    );
+    expect(crmCalls().filter((c) => c.command === 'createInterview')).toHaveLength(1);
+  });
+
+  it('a claim already held by someone else refuses the approval', async () => {
+    const id = await openItem();
+    // Another request got there first: the row is claimed, status in_review.
+    await state.db.rpc('claim_proposal', { p_item_id: id });
+
+    await expect(
+      approveProposal({ reviewItemId: id, corrections: APPROVAL }, ACTOR),
+    ).rejects.toMatchObject({ code: 'CONFLICT' });
+    expect(crmCalls()).toHaveLength(0);
+    expect(item().status).toBe('in_review');
+  });
+
+  it('IS RELEASED WHEN THE CRM WRITE FAILS, SO THE ITEM IS WORKABLE AGAIN', async () => {
+    const id = await openItem();
+    state.failNextCrmWrite = true;
+
+    await expect(
+      approveProposal({ reviewItemId: id, corrections: APPROVAL }, ACTOR),
+    ).rejects.toThrow(/CRM write failed/);
+
+    expect(item().status).toBe('open');
+    expect(item().claimed_at ?? null).toBeNull();
+
+    // And the retry succeeds, which is the point of releasing it.
+    await approveProposal({ reviewItemId: id, corrections: APPROVAL }, ACTOR);
+    expect(item().status).toBe('approved');
+  });
+
+  it('IS NOT RELEASED WHEN THE RECORD WAS ALREADY CREATED', async () => {
+    const id = await openItem();
+    state.failBookkeeping = 2;
+
+    await expect(
+      approveProposal({ reviewItemId: id, corrections: APPROVAL }, ACTOR),
+    ).rejects.toMatchObject({ code: 'PARTIAL_FAILURE' });
+
+    // Holding the claim is what stops a retry from walking back through the CRM
+    // write and creating the interview a second time.
+    expect(item().claimed_at).toBeTruthy();
+    await expect(
+      approveProposal({ reviewItemId: id, corrections: APPROVAL }, ACTOR),
+    ).rejects.toMatchObject({ code: 'CONFLICT' });
+    expect(crmCalls().filter((c) => c.command === 'createInterview')).toHaveLength(1);
+  });
+
+  it('THE PARTIAL FAILURE NAMES EVERYTHING NEEDED TO CLOSE IT BY HAND', async () => {
+    const id = await openItem();
+    state.failBookkeeping = 2;
+
+    const error = (await approveProposal(
+      { reviewItemId: id, corrections: APPROVAL },
+      ACTOR,
+    ).catch((e: unknown) => e)) as InstanceType<typeof AppError>;
+
+    expect(error.code).toBe('PARTIAL_FAILURE');
+    expect(error.details).toMatchObject({
+      reviewItemId: id,
+      intelligenceRunId: 'run-1',
+      createdRecordKind: 'interview',
+      createdRecordId: 'interview-1',
+    });
+    expect(error.details?.failure).toBeTruthy();
+  });
+
+  it('an automatic approval claims itself in the same insert', async () => {
+    await evaluateIntelligenceRun('run-1', ACTOR);
+    expect(item().status).toBe('approved');
+    expect(item().claimed_at).toBeTruthy();
+    expect(item().claimed_by).toBe(ACTOR.userId);
+    expect(item().reviewed_by ?? null).toBeNull();
+  });
+});
+
+/* =========================================================================
+ * SEQUENTIAL DUPLICATE REGRESSION — one per event type
+ * ========================================================================= */
+describe('approving twice, for each record type', () => {
+  const CASES = [
+    {
+      event: 'application',
+      command: 'createApplication',
+      extracted: { company: 'Acme Recruiting', job_title: 'Senior Java Developer' },
+      corrections: { company: 'Acme Recruiting', job_title: 'Senior Java Developer' },
+      column: 'created_application_id',
+    },
+    {
+      event: 'interview',
+      command: 'createInterview',
+      extracted: VAGUE,
+      corrections: {
+        application_id: APPLICATION,
+        scheduled_at: '2999-01-15T19:00:00.000Z',
+        time_zone: 'America/New_York',
+      },
+      column: 'created_interview_id',
+    },
+    {
+      event: 'assessment',
+      command: 'createAssessment',
+      extracted: VAGUE,
+      corrections: { application_id: APPLICATION, assessment_type: 'Java coding exercise' },
+      column: 'created_assessment_id',
+    },
+  ] as const;
+
+  for (const testCase of CASES) {
+    it(`${testCase.event}: the second approval is refused and creates nothing`, async () => {
+      seed({ extracted: testCase.extracted, confidence: 0.7 });
+      const run = state.db.rows('email_intelligence_runs')[0] as Record<string, unknown>;
+      run.event_type = testCase.event;
+
+      await evaluateIntelligenceRun('run-1', ACTOR);
+      const id = String(item().id);
+
+      await approveProposal({ reviewItemId: id, corrections: testCase.corrections }, ACTOR);
+      await expect(
+        approveProposal({ reviewItemId: id, corrections: testCase.corrections }, ACTOR),
+      ).rejects.toMatchObject({ code: 'CONFLICT' });
+
+      expect(crmCalls().filter((c) => c.command === testCase.command)).toHaveLength(1);
+      expect(item()[testCase.column]).toBeTruthy();
+      expect(item().status).toBe('approved');
+    });
+  }
 });

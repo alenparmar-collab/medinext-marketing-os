@@ -7,6 +7,7 @@ import {
   type DecisionReasonCode,
 } from '@/config/decisions';
 import { CONFIDENCE } from '@/config/intelligence';
+import { fingerprintProposal, materialDifferences } from './fingerprint';
 
 /**
  * The decision engine.
@@ -72,10 +73,22 @@ export interface DecisionInput {
   existingInterviews: ExistingInterview[];
   existingAssessments: ExistingAssessment[];
 
-  /** Whether a decision for this email and event type has already been acted on. */
+  /**
+   * The decision already recorded for this email and event type, if there is
+   * one. Not just "have we seen this" — what we DID, and the fingerprint of the
+   * proposal we did it on, so a second reading that says something different
+   * can be told apart from a second reading that says the same thing.
+   */
   alreadyActioned: {
+    itemId: string;
     status: string;
-    approvedData: Record<string, unknown> | null;
+    /** Server-computed fingerprint of the proposal that decision was made on. */
+    fingerprint: string | null;
+    /** The proposal as it was decided, for naming which field moved. */
+    proposedData: Record<string, unknown> | null;
+    candidateId: string | null;
+    createdRecordId: string | null;
+    createdRecordKind: 'application' | 'interview' | 'assessment' | 'rejection' | null;
   } | null;
 
   /** What the person who triggered this may actually do. */
@@ -99,6 +112,25 @@ export interface Decision {
   proposedData: Record<string, unknown>;
   /** Set when a duplicate or conflict names a specific record. */
   relatedRecordId: string | null;
+  /**
+   * Fingerprint of THIS proposal. Server-computed, never from the model, and
+   * the thing the idempotency key is built from.
+   */
+  fingerprint: string;
+  /**
+   * Set only when a previous decision for this email and event type was made on
+   * a materially different proposal. Everything a reviewer needs to see that
+   * the email was already acted on and that the latest reading disagrees.
+   */
+  interpretationChange: {
+    previousItemId: string;
+    previousStatus: string;
+    previousFingerprint: string | null;
+    previousData: Record<string, unknown> | null;
+    changedFields: string[];
+    existingRecordId: string | null;
+    existingRecordKind: 'application' | 'interview' | 'assessment' | 'rejection' | null;
+  } | null;
 }
 
 const PERMISSION_FOR_EVENT: Record<string, string> = {
@@ -120,34 +152,19 @@ export function decide(input: DecisionInput): Decision {
 
   // ---- Nothing to do ----------------------------------------------------
   if (input.eventType === 'other') {
-    return {
+    return settle(input, {
       outcome: 'ignore',
       reasonCodes: [],
       explanation: 'The email is not about an application, interview, assessment or rejection.',
       priority: 'low',
       proposedData: {},
       relatedRecordId: null,
-    };
+    });
   }
 
-  // ---- Already acted on --------------------------------------------------
-  //
-  // A reprocess, a redelivery, or a retried request. The first question is
-  // never "what does this say" but "have we already done something about it".
-  if (input.alreadyActioned && input.alreadyActioned.status === 'approved') {
-    const differs = proposalDiffers(input.alreadyActioned.approvedData, extracted);
-    return {
-      outcome: differs ? 'review_required' : 'ignore',
-      reasonCodes: differs ? ['conflict_detected'] : [],
-      explanation: differs
-        ? 'This email was already acted on, and the new reading disagrees with what was ' +
-          'approved. A person should decide which is right.'
-        : 'This email has already been acted on and the reading has not changed.',
-      priority: differs ? 'high' : 'low',
-      proposedData: extracted,
-      relatedRecordId: null,
-    };
-  }
+  // Whether this email has already been decided on is settled at the END, in
+  // `settle()`, because the answer depends on the proposal this reading
+  // produces — and that is not known until the rules below have run.
 
   // ---- Candidate identity -------------------------------------------------
   if (!input.candidateId) {
@@ -411,7 +428,7 @@ export function decide(input: DecisionInput): Decision {
 
   // ---- Verdict ------------------------------------------------------------
   if (reasons.length === 0) {
-    return {
+    return settle(input, {
       outcome: 'auto_approve',
       reasonCodes: [],
       explanation:
@@ -420,17 +437,98 @@ export function decide(input: DecisionInput): Decision {
       priority: 'low',
       proposedData,
       relatedRecordId: related,
-    };
+    });
   }
 
   const unique = [...new Set(reasons)];
-  return {
+  return settle(input, {
     outcome: 'review_required',
     reasonCodes: unique,
     explanation: notes.join(' '),
     priority: highestPriority(unique),
     proposedData,
     relatedRecordId: related,
+  });
+}
+
+/**
+ * The last question, asked of every decision: has this email already been
+ * decided, and does this reading still say the same thing?
+ *
+ * It runs here rather than at the top because the comparison is between
+ * PROPOSALS — what would be written — not between raw model output. The
+ * proposal is what the rules above produce, so the fingerprint cannot be taken
+ * until they have run.
+ *
+ * Three outcomes:
+ *
+ *   no prior decision       the decision above stands
+ *   same fingerprint        ignore — idempotent, nothing new to do or to ask
+ *   different fingerprint   REVIEW, always, whatever the decision above said
+ *
+ * The third is the one that matters. A second reading that moves the interview
+ * to a different day is not a duplicate and is not a new interview: it is a
+ * disagreement with something already done, and this system does not resolve
+ * those. It never edits the existing record, never cancels it, and never
+ * writes a second one — it puts both readings in front of a person and names
+ * the record already on file.
+ */
+function settle(
+  input: DecisionInput,
+  base: Omit<Decision, 'fingerprint' | 'interpretationChange'>,
+): Decision {
+  const fingerprint = fingerprintProposal(input.eventType, base.proposedData, input.candidateId);
+  const prior = input.alreadyActioned;
+
+  if (!prior) return { ...base, fingerprint, interpretationChange: null };
+
+  if (prior.fingerprint === fingerprint) {
+    return {
+      outcome: 'ignore',
+      reasonCodes: [],
+      explanation: 'This email has already been decided and the reading has not changed.',
+      priority: 'low',
+      proposedData: base.proposedData,
+      relatedRecordId: prior.createdRecordId ?? base.relatedRecordId,
+      fingerprint,
+      interpretationChange: null,
+    };
+  }
+
+  const changedFields = materialDifferences(
+    input.eventType,
+    prior.proposedData ?? {},
+    base.proposedData,
+    prior.candidateId,
+    input.candidateId,
+  );
+
+  const acted = prior.createdRecordId !== null;
+  return {
+    outcome: 'review_required',
+    // The reasons the reading would have been held anyway are kept: a changed
+    // interpretation that is ALSO missing a time zone should say both.
+    reasonCodes: [...new Set<DecisionReasonCode>([...base.reasonCodes, 'interpretation_changed'])],
+    explanation:
+      `The latest interpretation of this email differs from the proposal previously ` +
+      `${acted ? 'acted upon' : 'recorded'}` +
+      (changedFields.length > 0 ? ` (${changedFields.join(', ')})` : '') +
+      '. Nothing already on file has been changed. A person should decide which reading is ' +
+      'right.' +
+      (base.reasonCodes.length > 0 ? ` ${base.explanation}` : ''),
+    priority: 'high',
+    proposedData: base.proposedData,
+    relatedRecordId: prior.createdRecordId ?? base.relatedRecordId,
+    fingerprint,
+    interpretationChange: {
+      previousItemId: prior.itemId,
+      previousStatus: prior.status,
+      previousFingerprint: prior.fingerprint,
+      previousData: prior.proposedData,
+      changedFields,
+      existingRecordId: prior.createdRecordId,
+      existingRecordKind: prior.createdRecordKind,
+    },
   };
 }
 
@@ -547,29 +645,6 @@ function findApplication(
   return byTitle.length === 1 ? (byTitle[0] as ExistingApplication) : null;
 }
 
-function proposalDiffers(
-  approved: Record<string, unknown> | null,
-  extracted: Record<string, unknown>,
-): boolean {
-  if (!approved) return false;
-  const interesting = [
-    'interview_date',
-    'interview_time',
-    'timezone',
-    'company',
-    'job_title',
-    'due_date',
-    'assessment_name',
-  ];
-  return interesting.some((key) => {
-    const before = approved[key];
-    const after = extracted[key];
-    return before !== undefined && after !== undefined && before !== null && after !== null
-      ? String(before) !== String(after)
-      : false;
-  });
-}
-
 export function combine(date: string, time: string, zone: string): string {
   // Resolves the wall-clock time in the named zone to an instant, by measuring
   // that zone's offset at that moment rather than assuming one — a fixed
@@ -624,6 +699,7 @@ const DECISION_REASON_PRIORITY: Record<DecisionReasonCode, 'low' | 'normal' | 'h
   ambiguous_candidate: 'high',
   conflict_detected: 'high',
   conflicting_candidate_information: 'high',
+  interpretation_changed: 'high',
   status_transition_not_allowed: 'high',
   third_party_sender: 'high',
   low_candidate_confidence: 'normal',
