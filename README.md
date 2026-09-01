@@ -4,7 +4,7 @@ Marketing operations platform for candidate marketing. Replaces an Excel-based
 workflow with an auditable system, and gives each candidate a portal showing
 only their own information.
 
-**Current stage: Build 5.1 — ownership and attribution hardening.** Interviews and
+**Current stage: Build 6 — email ingestion and evidence layer.** Interviews and
 assessments now have full scheduling and outcome screens; daily reports exist
 and their figures are **counted from the records rather than typed in**; a
 review queue surfaces records that need a human decision, in neutral language
@@ -13,7 +13,9 @@ management are in place, with role escalation closed off in the database rather
 than in the interface. Build 5.1 then separated two things the reports had been
 conflating: **who is responsible for a candidate's marketing** and **who created
 the record**. They are not the same, and counting the second was making
-recruiters' own reports wrong.
+recruiters' own reports wrong. Build 6 then connected a marketing mailbox and
+began preserving what arrives — and stops there deliberately: nothing read from
+an email creates or changes a candidate, application, interview or assessment.
 
 ---
 
@@ -72,6 +74,10 @@ recruiters' own reports wrong.
 | Candidate assignment management with atomic transfer and full history | Done |
 | Responsible recruiter recorded on every marketing record, separately from its creator | Done |
 | Daily report figures attributed by responsibility, not by keystrokes | Done |
+| Mailbox connection over read-only OAuth, tokens encrypted outside `public` | Done |
+| Email ingestion: normalise, thread, preserve, idempotent retry | Done |
+| Internal email explorer with search, filters, pagination and thread view | Done |
+| Interpretation of email into business records | Not built — Build 7 |
 | Recruiter workspace ("your day so far") and manager unit workspace | Done |
 | Email ingestion, AI, payments, sales, WhatsApp, mobile | Out of scope |
 
@@ -393,7 +399,7 @@ policies; it exercises them.
 npm run db:test
 ```
 
-292 assertions covering: anonymous access, role resolution, internal scope,
+344 assertions covering: anonymous access, role resolution, internal scope,
 cross-tenant isolation, candidate isolation in both directions on candidates,
 applications, activities, interviews, assessments, notifications, documents and
 the timeline, internal-note isolation, storage-object authorization, write
@@ -408,7 +414,12 @@ role-escalation guards, atomic candidate reassignment, and the ownership model:
 that a supplied responsible recruiter is discarded rather than trusted, that
 system- and email-created records still count towards the right recruiter, that
 a reassignment does not rewrite historical attribution, and that a handover does
-not erase the previous recruiter's own figures.
+not erase the previous recruiter's own figures; and the whole email layer —
+candidates reading nothing at all, recruiters needing an explicit capability,
+cross-tenant mailbox isolation, credentials being unreachable from PostgREST,
+evidence being unwritable through the API, idempotent redelivery, legal
+processing transitions, a failed sync keeping its cursor, and no foreign key in
+either direction between an email row and a CRM record.
 
 Where an assertion once hardcoded a count from the seed, it now compares the
 RLS-filtered result against a superuser query implementing the intended rule.
@@ -426,7 +437,7 @@ cannot download candidate B's file" is an assertion, not a claim.
 bash scripts/db-mutation-test.sh
 ```
 
-Twenty-two probes, each deliberately breaking one guarantee and asserting that a
+Twenty-seven probes, each deliberately breaking one guarantee and asserting that a
 named assertion catches it: candidate isolation on candidates, applications,
 interviews, assessments, notifications and stored files; internal notes staying
 out of the portal; notification idempotency; cross-candidate attachment;
@@ -438,7 +449,11 @@ rather than adding a second owner; report figures following responsibility
 rather than keystrokes; ownership being derived rather than taken from the
 payload; historical ownership surviving a reassignment; ownership being
 uneditable after the event; a handover not erasing the previous recruiter's own
-figures; and those figures staying private between recruiters.
+figures; those figures staying private between recruiters; candidates having no
+route into the mailbox; email needing an explicit capability rather than just an
+internal role; one tenant's mailbox staying out of another's; email content
+staying out of the audit log; and ingested evidence being uneditable through the
+API.
 
 A green suite that cannot go red is worthless. Several of these probes have
 failed on first run, and every time they exposed a weak *test* rather than a
@@ -470,14 +485,17 @@ Restoring `recruiter_id = (select auth.uid())` returned the suite to 253/253.
 npm test
 ```
 
-157 assertions over validation schemas, the config/SQL sync and the Build 5
-and 5.1 guarantees — including that the TypeScript permission catalogue matches the SQL
+216 assertions over validation schemas, the config/SQL sync, the Build 5 and 5.1
+guarantees, and the email layer — including the ingestion service run for real
+against an in-memory database and a fixture provider — including that the TypeScript permission catalogue matches the SQL
 seed, that the enums match, that no sales role exists in either place, that
 nothing anywhere implements location-mismatch logic, that no schema or form
 control accepts a report figure, that no review label or generated reason uses
 accusatory language, that the role-escalation guards exist in the SQL, that no schema or command
 accepts an owner from the caller, and that the portal never carries the
-ownership column.
+ownership column, that address parsing survives a quoted comma, that a token
+never appears in a stored failure reason, and that the email modules import no
+CRM module and contain no classification or matching code.
 
 ### 3. HTTP smoke test
 
@@ -677,9 +695,8 @@ These are enforced, not merely documented:
 
 ## Known limitations
 
-The list is renumbered here: it had drifted out of sequence as builds appended
-to it, and item 11 ("interview and assessment creation has no UI form") is no
-longer true — Build 5 delivers those forms.
+Renumbered once, in Build 5, after the list drifted out of sequence; kept in
+sequence since.
 
 1. **No live Supabase verification.** Interactive sign-in, sign-out and Storage
    round trips have not been executed against a real project. The RLS policies
@@ -718,17 +735,30 @@ longer true — Build 5 delivers those forms.
     suspend and disable existing accounts and change their roles; creating a new
     internal account still means creating the auth user in Supabase. The
     invitation flow belongs with the portal-invitation work.
-14. **Records whose candidate had no primary recruiter are unattributed.**
+14. **The live Google round trip is unverified.** See "What was tested with
+    mocks, and what was not". OAuth, token refresh, real Gmail responses and
+    Storage writes for raw MIME have not been exercised against the real
+    services.
+15. **Attachment bytes are never downloaded.** Only metadata is stored. The
+    private bucket and the storage path column exist for the step that fetches
+    them, which is a deliberate, authorised action rather than something
+    ingestion does on its own.
+16. **Mailbox sync is on demand.** No polling loop, no scheduler, no push
+    subscription. Provider APIs are metered and a loop that runs whether or not
+    anything changed is the fastest way to be rate-limited.
+17. **Recruiters cannot see email at all.** By design, until the business
+    decides who should. Widening it is a seed row, not a code change.
+18. **Records whose candidate had no primary recruiter are unattributed.**
     `responsible_recruiter_id` is NULL for them and they count towards nobody's
     report. This is deliberate — see "Who owns the work is not who typed it" —
     but it does mean assigning a recruiter late leaves earlier records
     unattributed until somebody with `candidate.assign` corrects them. There is
     no bulk re-attribution tool.
-15. **Ownership is fixed at the event, including through a reschedule.** Moving
+19. **Ownership is fixed at the event, including through a reschedule.** Moving
     an interview to a different day moves the figure to that day but leaves it
     with the recruiter who owned it when it was booked. Recomputing on every
     edit would let a reschedule quietly transfer somebody's work.
-16. **A confirmed report cannot be reopened.** By design — confirmation freezes
+20. **A confirmed report cannot be reopened.** By design — confirmation freezes
     the figures. If a correction is genuinely needed, the current answer is a
     review item recording what changed, not an edit to the frozen snapshot.
 
@@ -804,23 +834,105 @@ column is left NULL. Attributing it to its creator would be the exact
 conflation being removed, and guessing would be worse than an honest gap. The
 0030 backfill prints a count of any such rows.
 
+### 3. An email is evidence, not an instruction
+
+Build 6 connects a marketing mailbox and preserves what arrives. It stops
+before interpretation, and the stop is structural rather than a matter of
+discipline:
+
+```
+MAILBOX → INGESTION → PRESERVED EVIDENCE → ready
+                                             ↓
+                                    (Build 7 — not built)
+                                    matching · classification · validation
+                                             ↓
+                                    VALIDATED BUSINESS EVENT → CRM
+```
+
+Nothing read from an email creates or changes a candidate, application,
+interview, assessment, rejection, assignment or notification. Enforced in four
+places, each independently checkable:
+
+| Layer | What stops an email becoming a record |
+|---|---|
+| Schema | No foreign key from an email table to a CRM table, or back. No `candidate_id` column on any email table. |
+| Code | The email modules import no CRM module and call no CRM table. |
+| Tests | `tests/build6-ingestion.test.ts` asserts both, plus the absence of any classification, extraction or matching code. |
+| Database | Assertions confirm no CRM row cites an ingested message, in either direction. |
+
+**Security posture.** Candidates have no access of any kind — not a policy that
+returns nothing, no policy at all. Recruiters hold no email capability by
+default: a marketing mailbox contains every candidate's correspondence with no
+per-candidate boundary, because nothing has been matched to a candidate yet, so
+the honest default is none. Managers read; only administrators connect.
+
+**Credentials.** The OAuth client secret is an environment variable and never a
+column. Provider tokens are encrypted by the application (AES-256-GCM, key from
+the environment) before they reach Postgres, and stored in a `private` schema
+with no grants to `authenticated` — not merely policy-protected, but
+unaddressable through PostgREST. Access is read-only: the single scope requested
+is `gmail.readonly`, there is no send scope, and the provider interface offers
+no send, reply or delete operation to call.
+
+**Idempotency.** `unique (mailbox_id, provider_message_id)`. A redelivered
+message moves `last_seen_at` and nothing else; the evidence is never rewritten,
+and a retried or overlapping sync updates rather than duplicates.
+
+**Sync failure.** A failed run records no `cursor_after` and the mailbox keeps
+its last successful position, so the next run resumes rather than restarting or
+skipping. The screen shows *last successful sync* and *last attempt* as separate
+values — conflating them is how a mailbox stops importing for a fortnight while
+everything looks fine.
+
+---
+
+## What was tested with mocks, and what was not
+
+This distinction matters more here than anywhere else in the codebase, because
+the parts that cannot be tested locally are the parts that touch somebody's real
+mailbox.
+
+**Executed:** normalisation against recorded Gmail payload shapes; the ingestion
+service run for real against an in-memory database and a fixture provider,
+including page walking, redelivery, mid-run failure and recovery; token
+encryption and redaction; every RLS policy against real PostgreSQL as the real
+`authenticated` role; the schema, its constraints and its state machine.
+
+**Not executed:** the live Google OAuth round trip, a real `gmail.readonly`
+token exchange or refresh, real Gmail API responses, `history.list` cursor
+expiry against the real service, and writing raw MIME or attachment bytes to
+Supabase Storage. All of that needs Google credentials and a Supabase project
+this environment does not have.
+
+**So: this is not production-verified.** Before connecting a real mailbox,
+exercise the OAuth flow end to end, confirm a refresh token is issued and that a
+refresh succeeds, and check that the first sync of a large mailbox respects the
+message budget.
+
 ---
 
 ## Next build
 
-Build 6 has not been specified. The natural candidates, in the order the
-architecture anticipates them:
+Build 7 is the interpretation layer these builds have been clearing the way
+for, and its shape is already constrained by what exists:
 
-- **Excel migration** (`docs/architecture/13-excel-migration.md`) — the `ingest`
-  and `staging` schemas, and the importer that lands historical rows as
-  `excel_import` source records awaiting verification.
-- **Email intelligence** (`docs/architecture/10-email-intelligence.md`) — the
-  pipeline the trigger-driven derivation and the review queue were designed to
-  receive: source data, interpretation, and verified records kept separate.
-  Build 5.1 is the precondition for it. A record arriving from an email has no
-  human creator, and until the reports counted responsibility rather than
-  keystrokes, every such record would have counted towards nobody. The
-  attribution tests already simulate that pipeline; no mailbox is connected and
-  no email code exists.
+- **Candidate matching** — connect a `ready` message to a candidate, as a
+  proposal rather than a fact.
+- **Classification and extraction** — decide what an email is evidence of, with
+  a confidence score.
+- **Validation** — confident results become business records through the
+  existing commands; uncertain ones become review items in the queue built in
+  Build 5, in the neutral language it already enforces.
+
+The three separations this codebase has held throughout are what make that
+safe to attempt: source data apart from interpretation apart from verified
+records; ownership apart from authorship; and evidence apart from instruction.
+
+Also still outstanding, independent of Build 7:
+
+- **Excel migration** (`docs/architecture/13-excel-migration.md`) — the
+  `ingest` and `staging` schemas and the historical importer.
 - **Portal invitations and rate limiting** — the remaining gap in account
   lifecycle.
+- **Scheduled or push-based mailbox sync** — synchronisation is on demand
+  today; a `pg_cron` job or a Gmail push subscription is a deployment decision.

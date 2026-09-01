@@ -1497,7 +1497,9 @@ select test.check('structure', 'every business table carries business_unit_id',
      ('documents'),('candidate_internal_notes'),
      ('applications'),('marketing_activities'),
      ('interviews'),('assessments'),('notifications'),
-     ('daily_reports'),('review_items')) as t(tbl)
+     ('daily_reports'),('review_items'),
+     ('mailboxes'),('email_threads'),('email_messages'),
+     ('email_attachments'),('mailbox_sync_runs')) as t(tbl)
    where not exists (
      select 1 from information_schema.columns
       where table_schema='public' and table_name=t.tbl and column_name='business_unit_id'
@@ -1509,7 +1511,9 @@ select test.check('structure', 'every audited business table has the audit trigg
      ('documents'),('users'),('user_roles'),('candidate_internal_notes'),
      ('applications'),('marketing_activities'),('application_status_history'),
      ('interviews'),('assessments'),('notifications'),
-     ('interview_schedule_history'),('daily_reports'),('review_items')) as t(tbl)
+     ('interview_schedule_history'),('daily_reports'),('review_items'),
+     ('mailboxes'),('email_threads'),('email_messages'),
+     ('email_attachments'),('mailbox_sync_runs')) as t(tbl)
    where not exists (
      select 1 from pg_trigger tg
        join pg_class c on c.oid = tg.tgrelid
@@ -2105,3 +2109,359 @@ begin
     ('attribution', 'A CANDIDATE CANNOT READ RECRUITER FIGURES',
      v_blocked, case when v_blocked then 'ok' else 'the figures were returned' end);
 end $$;
+
+-- ===========================================================================
+-- BUILD 6 — Email evidence
+-- ===========================================================================
+
+-- ---------------------------------------------------------------------------
+-- SECTION 35 — Candidates have no access of any kind  ***critical***
+--
+-- Email is the most sensitive data in the product: one mailbox holds every
+-- candidate's correspondence mixed together, with no per-candidate boundary,
+-- because nothing has been matched to a candidate yet. A portal account must
+-- therefore see none of it — not their own, not a filtered subset, none.
+-- ---------------------------------------------------------------------------
+select test.check('email', 'CANDIDATE CANNOT READ ANY EMAIL MESSAGE',
+  test.count_as(:'PRIYA_USER', 'select count(*) from public.email_messages'), 0::bigint);
+
+select test.check('email', 'A SECOND CANDIDATE ALSO READS NO EMAIL',
+  test.count_as(:'LUCIA_USER', 'select count(*) from public.email_messages'), 0::bigint);
+
+select test.check('email', 'CANDIDATE CANNOT READ EMAIL THREADS',
+  test.count_as(:'PRIYA_USER', 'select count(*) from public.email_threads'), 0::bigint);
+
+select test.check('email', 'CANDIDATE CANNOT READ ATTACHMENT METADATA',
+  test.count_as(:'PRIYA_USER', 'select count(*) from public.email_attachments'), 0::bigint);
+
+select test.check('email', 'CANDIDATE CANNOT READ MAILBOX CONFIGURATION',
+  test.count_as(:'PRIYA_USER', 'select count(*) from public.mailboxes'), 0::bigint);
+
+select test.check('email', 'candidate cannot read sync history',
+  test.count_as(:'PRIYA_USER', 'select count(*) from public.mailbox_sync_runs'), 0::bigint);
+
+-- Naming a row directly, rather than counting, in case a policy ever filters
+-- by something a candidate could satisfy.
+select test.check('email', 'CANDIDATE CANNOT READ A NAMED EMAIL BODY',
+  test.count_as(:'PRIYA_USER',
+    'select count(*) from public.email_messages where body_text is not null'), 0::bigint);
+
+select test.check('email', 'CANDIDATE CANNOT READ A PROVIDER MESSAGE ID',
+  test.count_as(:'PRIYA_USER',
+    'select count(*) from public.email_messages where provider_message_id is not null'),
+  0::bigint);
+
+select test.check('email', 'anonymous callers reach no email table',
+  test.count_anon('select count(*) from public.email_messages'), -1::bigint);
+
+-- ---------------------------------------------------------------------------
+-- SECTION 36 — Internal authorization
+--
+-- Recruiters hold no email capability by default. That is a decision, not an
+-- omission: there is no per-candidate filter to apply to a mailbox nobody has
+-- matched yet, so the honest default is none.
+-- ---------------------------------------------------------------------------
+select test.check('email', 'AN UNAUTHORIZED RECRUITER READS NO EMAIL',
+  test.count_as(:'SALAS', 'select count(*) from public.email_messages'), 0::bigint);
+
+select test.check('email', 'an unauthorized recruiter sees no mailbox',
+  test.count_as(:'SALAS', 'select count(*) from public.mailboxes'), 0::bigint);
+
+select test.check('email', 'AUTHORIZED MANAGER READS THEIR UNIT''S EMAIL',
+  test.count_as(:'MANAGER', 'select count(*) from public.email_messages'),
+  (select count(*) from public.email_messages where business_unit_id = :'EU_UNIT'::uuid));
+
+select test.check('email', 'authorized manager sees their unit''s mailboxes',
+  test.count_as(:'MANAGER', 'select count(*) from public.mailboxes'),
+  (select count(*) from public.mailboxes where business_unit_id = :'EU_UNIT'::uuid));
+
+select test.check('email', 'admin reads every mailbox across units',
+  test.count_as(:'ADMIN', 'select count(*) from public.mailboxes'),
+  (select count(*) from public.mailboxes));
+
+-- A manager may look at the mailbox, but connecting one is an administrator's
+-- act: mailbox.manage is admin-only.
+select test.check('email', 'A MANAGER CANNOT CONNECT A MAILBOX',
+  test.write_denied(:'MANAGER',
+    'insert into public.mailboxes (business_unit_id, provider, mailbox_address) values ('
+    || quote_literal(:'EU_UNIT') || ', ''gmail'', ''sneaky@medinext.invalid'')'),
+  true);
+
+select test.check('email', 'a recruiter cannot connect a mailbox either',
+  test.write_denied(:'SALAS',
+    'insert into public.mailboxes (business_unit_id, provider, mailbox_address) values ('
+    || quote_literal(:'EU_UNIT') || ', ''gmail'', ''sneakier@medinext.invalid'')'),
+  true);
+
+-- Evidence is read-only through the API. Every write happens under the service
+-- role in the ingestion service, so there is no grant to widen.
+select test.check('email', 'NOBODY CAN INSERT AN EMAIL THROUGH THE API',
+  test.write_denied(:'ADMIN',
+    'insert into public.email_messages (business_unit_id, mailbox_id, thread_id, '
+    || 'provider_message_id, from_address, received_at) values ('
+    || quote_literal(:'EU_UNIT') || ', ''00000000-0000-4000-9600-000000000001'', '
+    || '''00000000-0000-4000-9700-000000000001'', ''forged-1'', ''a@b.invalid'', now())'),
+  true);
+
+select test.check('email', 'NOBODY CAN EDIT AN EMAIL THROUGH THE API',
+  test.write_denied(:'ADMIN',
+    'update public.email_messages set body_text = ''rewritten'' where id = '
+    || quote_literal('00000000-0000-4000-9800-000000000001')),
+  true);
+
+select test.check('email', 'nobody can delete an email through the API',
+  test.write_denied(:'ADMIN',
+    'delete from public.email_messages where id = '
+    || quote_literal('00000000-0000-4000-9800-000000000001')),
+  true);
+
+-- ---------------------------------------------------------------------------
+-- SECTION 37 — Tenancy
+-- ---------------------------------------------------------------------------
+select test.check('email', 'CROSS-TENANT: EU MANAGER CANNOT READ THE APAC MESSAGE',
+  test.count_as(:'MANAGER',
+    'select count(*) from public.email_messages where id = '
+    || quote_literal('00000000-0000-4000-9800-000000000006')), 0::bigint);
+
+select test.check('email', 'CROSS-TENANT: EU MANAGER CANNOT READ THE APAC MAILBOX',
+  test.count_as(:'MANAGER',
+    'select count(*) from public.mailboxes where id = '
+    || quote_literal('00000000-0000-4000-9600-000000000002')), 0::bigint);
+
+select test.check('email', 'cross-tenant: EU manager cannot read the APAC thread',
+  test.count_as(:'MANAGER',
+    'select count(*) from public.email_threads where id = '
+    || quote_literal('00000000-0000-4000-9700-000000000003')), 0::bigint);
+
+-- ---------------------------------------------------------------------------
+-- SECTION 38 — Credentials
+--
+-- The tokens table is not merely policy-protected: it lives outside `public`,
+-- so PostgREST cannot address it and `authenticated` holds no grant on it.
+-- ---------------------------------------------------------------------------
+select test.check('email', 'THE CREDENTIALS TABLE IS NOT IN A POSTGREST-EXPOSED SCHEMA',
+  (select count(*) from information_schema.tables
+    where table_schema = 'public' and table_name = 'mailbox_credentials'), 0::bigint);
+
+select test.check('email', 'AUTHENTICATED HOLDS NO GRANT ON THE CREDENTIALS TABLE',
+  (select count(*) from information_schema.role_table_grants
+    where table_schema = 'private' and table_name = 'mailbox_credentials'
+      and grantee in ('authenticated', 'anon', 'PUBLIC')), 0::bigint);
+
+select test.check('email', 'ADMIN CANNOT READ STORED TOKENS',
+  test.count_as(:'ADMIN', 'select count(*) from private.mailbox_credentials'), -1::bigint);
+
+select test.check('email', 'no email table stores a token or a secret',
+  (select count(*) from information_schema.columns
+    where table_schema = 'public'
+      and table_name in ('mailboxes', 'email_messages', 'email_threads',
+                         'email_attachments', 'mailbox_sync_runs')
+      and (column_name like '%token%' or column_name like '%secret%'
+           or column_name like '%password%')), 0::bigint);
+
+-- ---------------------------------------------------------------------------
+-- SECTION 39 — Idempotency, threading and state
+-- ---------------------------------------------------------------------------
+select test.check('email', 'THE REDELIVERED MESSAGE WAS NOT DUPLICATED',
+  (select count(*) from public.email_messages
+    where mailbox_id = '00000000-0000-4000-9600-000000000001'
+      and provider_message_id = 'msg-northwind-003'), 1::bigint);
+
+select test.check('email', 'the redelivery moved last_seen_at past first_seen_at',
+  (select last_seen_at > first_seen_at from public.email_messages
+    where provider_message_id = 'msg-northwind-003'), true);
+
+select test.check('email', 'thread membership matches the messages themselves',
+  (select count(*) from public.email_threads t
+    where t.message_count <> (select count(*) from public.email_messages m
+                               where m.thread_id = t.id)), 0::bigint);
+
+select test.check('email', 'a thread cannot hold a message from another mailbox',
+  (select count(*) from public.email_messages m
+     join public.email_threads t on t.id = m.thread_id
+    where t.mailbox_id <> m.mailbox_id), 0::bigint);
+
+-- Threading is by provider id, so two different threads may legitimately share
+-- a normalized subject. This asserts the identity key is the provider's.
+select test.check('email', 'THREAD IDENTITY IS THE PROVIDER ID, NOT THE SUBJECT',
+  (select count(*) from pg_indexes
+    where tablename = 'email_threads'
+      and indexdef like '%provider_thread_id%' and indexdef like 'CREATE UNIQUE%'), 1::bigint);
+
+do $$
+declare
+  v_msg     constant uuid := '00000000-0000-4000-9800-000000000001';
+  v_blocked boolean := false;
+begin
+  -- ready -> received is not a legal transition; only a failure may be retried.
+  begin
+    update public.email_messages set processing_status = 'received' where id = v_msg;
+  exception when others then
+    v_blocked := true;
+  end;
+
+  insert into test.results (section, name, passed, detail)
+  values ('email', 'AN ILLEGAL PROCESSING TRANSITION IS REFUSED',
+          v_blocked, case when v_blocked then 'ok' else 'ready -> received was accepted' end);
+
+  -- ready -> processing -> ready is legal, and clears any stale error.
+  update public.email_messages set processing_status = 'processing' where id = v_msg;
+  update public.email_messages set processing_status = 'ready' where id = v_msg;
+
+  insert into test.results (section, name, passed, detail)
+  values ('email', 'a legal processing transition is allowed',
+          (select processing_status = 'ready' from public.email_messages where id = v_msg), 'ok');
+
+  -- A failed message must carry a reason; the check constraint enforces it.
+  v_blocked := false;
+  begin
+    update public.email_messages
+       set processing_status = 'failed', processing_error = null
+     where id = v_msg;
+  exception when others then
+    v_blocked := true;
+  end;
+
+  insert into test.results (section, name, passed, detail)
+  values ('email', 'A FAILED MESSAGE MUST SAY WHY',
+          v_blocked, case when v_blocked then 'ok' else 'a failure with no reason was accepted' end);
+end $$;
+
+-- ---------------------------------------------------------------------------
+-- SECTION 40 — Sync state and audit
+-- ---------------------------------------------------------------------------
+select test.check('email', 'A FAILED SYNC RECORDED NO NEW CURSOR',
+  (select count(*) from public.mailbox_sync_runs
+    where status = 'failed' and cursor_after is not null), 0::bigint);
+
+select test.check('email', 'THE FAILURE DID NOT LOSE THE LAST GOOD CURSOR',
+  (select sync_cursor is not null from public.mailboxes
+    where id = '00000000-0000-4000-9600-000000000001'), true);
+
+select test.check('email', 'a failed sync explains itself',
+  (select count(*) from public.mailbox_sync_runs
+    where status = 'failed' and error_message is null), 0::bigint);
+
+select test.check('email', 'the last successful sync is recorded separately from the last attempt',
+  (select last_successful_sync_at is not null and last_sync_attempted_at is not null
+     from public.mailboxes where id = '00000000-0000-4000-9600-000000000001'), true);
+
+select test.check('email', 'mailbox connection is captured in the audit log',
+  (select count(*) > 0 from audit.audit_logs
+    where entity_type = 'mailboxes' and action = 'insert'), true);
+
+select test.check('email', 'message ingestion is captured in the audit log',
+  (select count(*) > 0 from audit.audit_logs
+    where entity_type = 'email_messages' and action = 'insert'), true);
+
+select test.check('email', 'sync runs are captured in the audit log',
+  (select count(*) > 0 from audit.audit_logs
+    where entity_type = 'mailbox_sync_runs'), true);
+
+select test.check('email', 'processing state changes are captured in the audit log',
+  (select count(*) > 0 from audit.audit_logs
+    where entity_type = 'email_messages' and action = 'update'
+      and 'processing_status' = any(changed_fields)), true);
+
+-- The audit log must not become a second copy of the mailbox.
+select test.check('email', 'NO EMAIL BODY REACHES THE AUDIT LOG',
+  (select count(*) from audit.audit_logs
+    where entity_type = 'email_messages'
+      and (new_data ->> 'body_text') is not null
+      and (new_data ->> 'body_text') <> '[redacted]'), 0::bigint);
+
+select test.check('email', 'no subject or sender reaches the audit log',
+  (select count(*) from audit.audit_logs
+    where entity_type = 'email_messages'
+      and coalesce(new_data ->> 'subject', '[redacted]') <> '[redacted]'), 0::bigint);
+
+-- ---------------------------------------------------------------------------
+-- SECTION 41 — The architectural boundary  ***the point of the build***
+--
+-- No email row may reference a CRM record, in either direction. Build 7 will
+-- connect them through a validated, reviewable step; until then the absence is
+-- what guarantees an email cannot silently become a business record.
+-- ---------------------------------------------------------------------------
+select test.check('email', 'NO EMAIL TABLE REFERENCES A CRM RECORD',
+  (select count(*) from information_schema.table_constraints tc
+     join information_schema.constraint_column_usage ccu
+       on ccu.constraint_name = tc.constraint_name
+      and ccu.table_schema = tc.table_schema
+    where tc.constraint_type = 'FOREIGN KEY'
+      and tc.table_schema = 'public'
+      and tc.table_name in ('email_messages', 'email_threads', 'email_attachments',
+                            'mailboxes', 'mailbox_sync_runs')
+      and ccu.table_name in ('candidates', 'applications', 'interviews', 'assessments',
+                             'marketing_activities', 'candidate_assignments',
+                             'notifications', 'review_items')), 0::bigint);
+
+select test.check('email', 'NO CRM TABLE REFERENCES AN EMAIL RECORD',
+  (select count(*) from information_schema.table_constraints tc
+     join information_schema.constraint_column_usage ccu
+       on ccu.constraint_name = tc.constraint_name
+      and ccu.table_schema = tc.table_schema
+    where tc.constraint_type = 'FOREIGN KEY'
+      and tc.table_schema = 'public'
+      and tc.table_name in ('candidates', 'applications', 'interviews', 'assessments',
+                            'marketing_activities', 'notifications', 'review_items')
+      and ccu.table_name in ('email_messages', 'email_threads', 'email_attachments',
+                             'mailboxes')), 0::bigint);
+
+select test.check('email', 'no email table carries a candidate column',
+  (select count(*) from information_schema.columns
+    where table_schema = 'public'
+      and table_name in ('email_messages', 'email_threads', 'email_attachments',
+                         'mailboxes', 'mailbox_sync_runs')
+      and column_name in ('candidate_id', 'application_id', 'interview_id', 'assessment_id')),
+  0::bigint);
+
+-- No business record traces back to an ingested message.
+--
+-- Counting `source_type = 'email_event'` would be the obvious assertion and
+-- would be wrong: Build 5.1's attribution tests deliberately create records
+-- with that source to simulate the future pipeline, and they are not evidence
+-- of anything Build 6 did. What actually has to be true is narrower and
+-- stronger — no CRM row cites a message this build ingested.
+select test.check('email', 'NO APPLICATION CITES AN INGESTED MESSAGE',
+  (select count(*) from public.applications a
+    where exists (
+      select 1 from public.email_messages m
+      where a.source_reference is not null
+        and (a.source_reference = m.provider_message_id
+             or a.source_reference = m.internet_message_id
+             or a.source_reference like '%' || m.provider_message_id || '%')
+    )), 0::bigint);
+
+select test.check('email', 'NO INTERVIEW CITES AN INGESTED MESSAGE',
+  (select count(*) from public.interviews i
+    where exists (
+      select 1 from public.email_messages m
+      where i.source_reference is not null
+        and (i.source_reference = m.provider_message_id
+             or i.source_reference = m.internet_message_id
+             or i.source_reference like '%' || m.provider_message_id || '%')
+    )), 0::bigint);
+
+select test.check('email', 'no assessment cites an ingested message',
+  (select count(*) from public.assessments s
+    where exists (
+      select 1 from public.email_messages m
+      where s.source_reference is not null
+        and (s.source_reference = m.provider_message_id
+             or s.source_reference = m.internet_message_id
+             or s.source_reference like '%' || m.provider_message_id || '%')
+    )), 0::bigint);
+
+-- And no marketing activity, which is the table an interpretation layer would
+-- reach for first.
+select test.check('email', 'no marketing activity cites an ingested message',
+  (select count(*) from public.marketing_activities a
+    where exists (
+      select 1 from public.email_messages m
+      where a.source_reference is not null
+        and a.source_reference like '%' || m.provider_message_id || '%'
+    )), 0::bigint);
+
+select test.check('email', 'ingesting email created no notification',
+  (select count(*) from public.notifications
+    where entity_type in ('email_message', 'mailbox')), 0::bigint);

@@ -73,6 +73,7 @@ for path in / /overview /candidates /candidates/new /marketing /settings /team \
             /applications /applications/new /interviews /interviews/new \
             /assessments /assessments/new /notifications \
             /reports /reports/daily /reports/daily/new /reports/daily/today /review \
+            /emails /settings/mailbox \
             /portal /portal/profile /portal/marketing /portal/documents \
             /portal/applications /portal/activity /portal/interviews \
             /portal/assessments /portal/notifications; do
@@ -84,6 +85,23 @@ for path in / /overview /candidates /candidates/new /marketing /settings /team \
     fail "${path} redirects to sign-in" "got ${code} -> ${target:-none}"
   fi
 done
+
+echo "==> Mailbox OAuth refuses an unauthenticated caller"
+OAUTH_CODE="$(curl -s -o /dev/null -w '%{http_code}' "${BASE}/api/mailbox/oauth/start")"
+OAUTH_TARGET="$(curl -s -o /dev/null -w '%{redirect_url}' "${BASE}/api/mailbox/oauth/start")"
+if [[ "${OAUTH_CODE}" == "307" && "${OAUTH_TARGET}" == *"/sign-in"* ]]; then
+  pass "OAuth start redirects an anonymous caller to sign-in"
+else
+  fail "OAuth start redirects an anonymous caller to sign-in" "got ${OAUTH_CODE} -> ${OAUTH_TARGET:-none}"
+fi
+
+CB_CODE="$(curl -s -o /dev/null -w '%{http_code}' "${BASE}/api/mailbox/oauth/callback?code=x&state=y")"
+CB_TARGET="$(curl -s -o /dev/null -w '%{redirect_url}' "${BASE}/api/mailbox/oauth/callback?code=x&state=y")"
+if [[ "${CB_CODE}" == "307" && "${CB_TARGET}" == *"/sign-in"* ]]; then
+  pass "OAuth callback refuses an anonymous caller"
+else
+  fail "OAuth callback refuses an anonymous caller" "got ${CB_CODE} -> ${CB_TARGET:-none}"
+fi
 
 echo "==> Sign-out is POST only"
 [[ "$(curl -s -o /dev/null -w '%{http_code}' "${BASE}/auth/sign-out")" == "405" ]] \

@@ -242,9 +242,33 @@ describe('provenance survives intact', () => {
     expect(enums).toContain("'email_event'");
   });
 
-  it('nothing in this build implements email or AI', () => {
+  /**
+   * This began as "nothing in this build implements email or AI".
+   *
+   * Build 6 implements email deliberately, so the email half is now scoped to
+   * the attribution work it was actually about: the ownership model must not
+   * have grown a mailbox dependency. The AI half stays global and unchanged,
+   * because no build so far has an interpretation layer and the assertion is
+   * what keeps it that way.
+   */
+  it('the attribution work implements no email or AI integration', () => {
     const forbidden = /imap|smtp\b|mailbox|openai|anthropic|huggingface|hugging_face|embedding/i;
     expect(forbidden.test(attribution)).toBe(false);
+
+    const attributionFiles = appSources.filter(
+      ({ path }) =>
+        path.includes('/reports/') ||
+        path.includes('/assignments/') ||
+        path.endsWith('patterns/attribution.tsx'),
+    );
+    expect(attributionFiles.length).toBeGreaterThan(0);
+    expect(attributionFiles.filter(({ text }) => forbidden.test(text)).map(({ path }) => path)).toEqual(
+      [],
+    );
+  });
+
+  it('no model or AI integration exists anywhere in the codebase', () => {
+    const forbidden = /openai|anthropic|huggingface|hugging_face|\bembedding\b|langchain/i;
     const offenders = appSources.filter(({ text }) => forbidden.test(text)).map(({ path }) => path);
     expect(offenders).toEqual([]);
   });

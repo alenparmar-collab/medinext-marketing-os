@@ -33,6 +33,11 @@ import type {
   ReviewItemStatus,
   ReviewItemPriority,
   ReviewResolution,
+  EmailProvider,
+  MailboxStatus,
+  EmailProcessingStatus,
+  EmailSyncStatus,
+  EmailSyncTrigger,
 } from '@/config/statuses';
 import type { RoleCode } from '@/config/permissions';
 
@@ -402,6 +407,127 @@ type TableDef<Row, Insert = Partial<Row>, Update = Partial<Row>> = {
   Relationships: [];
 };
 
+
+/* ===========================================================================
+ * EMAIL EVIDENCE (Build 6)
+ *
+ * Note what these row types do NOT contain: any reference to a candidate,
+ * application, interview or assessment. An email is evidence; connecting it to
+ * a business record is a later, validated step.
+ * =========================================================================== */
+export type MailboxRow = {
+  id: string;
+  business_unit_id: string;
+  provider: EmailProvider;
+  mailbox_address: string;
+  display_name: string | null;
+  status: MailboxStatus;
+  sync_cursor: string | null;
+  last_successful_sync_at: string | null;
+  last_sync_attempted_at: string | null;
+  last_sync_error: string | null;
+  connected_by: string | null;
+  connected_at: string | null;
+  disconnected_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export type EmailThreadRow = {
+  id: string;
+  business_unit_id: string;
+  mailbox_id: string;
+  provider_thread_id: string;
+  normalized_subject: string | null;
+  first_message_at: string | null;
+  last_message_at: string | null;
+  message_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export type EmailMessageRow = {
+  id: string;
+  business_unit_id: string;
+  mailbox_id: string;
+  thread_id: string;
+  provider_message_id: string;
+  internet_message_id: string | null;
+  in_reply_to: string | null;
+  references_header: string[];
+  from_address: string;
+  from_name: string | null;
+  to_addresses: string[];
+  cc_addresses: string[];
+  bcc_addresses: string[];
+  subject: string | null;
+  snippet: string | null;
+  body_text: string | null;
+  body_html: string | null;
+  sent_at: string | null;
+  received_at: string;
+  headers: Record<string, string>;
+  has_attachments: boolean;
+  attachment_count: number;
+  raw_storage_path: string | null;
+  raw_checksum: string | null;
+  source_type: SourceKind;
+  processing_status: EmailProcessingStatus;
+  processing_error: string | null;
+  first_seen_at: string;
+  last_seen_at: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export type EmailAttachmentRow = {
+  id: string;
+  business_unit_id: string;
+  message_id: string;
+  provider_attachment_id: string | null;
+  file_name: string;
+  mime_type: string | null;
+  size_bytes: number | null;
+  storage_path: string | null;
+  checksum_sha256: string | null;
+  downloaded_at: string | null;
+  created_at: string;
+}
+
+/**
+ * Ciphertext only. The plaintext token exists in memory during a request and
+ * nowhere else — see src/server/modules/email/crypto.ts.
+ */
+export type MailboxCredentialRow = {
+  mailbox_id: string;
+  refresh_token_encrypted: string;
+  access_token_encrypted: string | null;
+  access_token_expires_at: string | null;
+  granted_scopes: string[];
+  key_version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export type MailboxSyncRunRow = {
+  id: string;
+  business_unit_id: string;
+  mailbox_id: string;
+  trigger_kind: EmailSyncTrigger;
+  status: EmailSyncStatus;
+  started_at: string;
+  finished_at: string | null;
+  cursor_before: string | null;
+  cursor_after: string | null;
+  messages_seen: number;
+  messages_created: number;
+  messages_updated: number;
+  attachments_seen: number;
+  error_message: string | null;
+  started_by: string | null;
+  created_at: string;
+}
+
 export type Database = {
   public: {
     Tables: {
@@ -424,6 +550,11 @@ export type Database = {
       notifications: TableDef<NotificationRow>;
       daily_reports: TableDef<DailyReportRow>;
       review_items: TableDef<ReviewItemRow>;
+      mailboxes: TableDef<MailboxRow>;
+      email_threads: TableDef<EmailThreadRow>;
+      email_messages: TableDef<EmailMessageRow>;
+      email_attachments: TableDef<EmailAttachmentRow>;
+      mailbox_sync_runs: TableDef<MailboxSyncRunRow>;
     };
     Views: { [_ in never]: never };
     Functions: {
@@ -501,6 +632,24 @@ export type Database = {
       user_status: UserStatus;
       source_kind: SourceKind;
     };
+    CompositeTypes: { [_ in never]: never };
+  };
+
+  /**
+   * NOT exposed to PostgREST.
+   *
+   * This schema is reachable only through a client created with the service
+   * role key, which is why OAuth tokens live here: `authenticated` holds no
+   * grant on it, so the table is not merely policy-protected but unaddressable
+   * from a browser request.
+   */
+  private: {
+    Tables: {
+      mailbox_credentials: TableDef<MailboxCredentialRow>;
+    };
+    Views: { [_ in never]: never };
+    Functions: { [_ in never]: never };
+    Enums: { [_ in never]: never };
     CompositeTypes: { [_ in never]: never };
   };
 }

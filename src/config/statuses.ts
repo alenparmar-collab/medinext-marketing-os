@@ -432,3 +432,87 @@ export const USER_STATUS_META: Record<
   suspended: { label: 'Suspended', tone: 'caution',  canSignIn: false },
   disabled:  { label: 'Disabled',  tone: 'muted',    canSignIn: false },
 };
+
+/* ===========================================================================
+ * EMAIL EVIDENCE (Build 6)
+ *
+ * Note what the processing states deliberately do NOT include: nothing here
+ * says "classified", "extracted", "matched" or "interpreted". Build 6 has no
+ * interpretation layer, so a status implying one would be a label with nothing
+ * behind it — and a status that lies is worse than a status that is missing.
+ * =========================================================================== */
+export const EMAIL_PROVIDERS = ['gmail', 'microsoft', 'imap'] as const;
+export type EmailProvider = (typeof EMAIL_PROVIDERS)[number];
+
+export const EMAIL_PROVIDER_LABELS: Record<EmailProvider, string> = {
+  gmail: 'Google Workspace',
+  microsoft: 'Microsoft 365',
+  imap: 'IMAP',
+};
+
+export const MAILBOX_STATUSES = ['disconnected', 'connected', 'error', 'revoked'] as const;
+export type MailboxStatus = (typeof MAILBOX_STATUSES)[number];
+
+export const MAILBOX_STATUS_META: Record<
+  MailboxStatus,
+  { label: string; tone: StatusTone; description: string }
+> = {
+  connected: {
+    label: 'Connected',
+    tone: 'positive',
+    description: 'Authorised and synchronising.',
+  },
+  error: {
+    label: 'Sync failing',
+    tone: 'caution',
+    description: 'Still authorised, but the last attempt did not complete.',
+  },
+  revoked: {
+    label: 'Access withdrawn',
+    tone: 'caution',
+    description: 'The provider rejected our credentials. Reconnect the mailbox.',
+  },
+  disconnected: {
+    label: 'Not connected',
+    tone: 'muted',
+    description: 'No mailbox is authorised.',
+  },
+};
+
+export const EMAIL_PROCESSING_STATUSES = [
+  'received',
+  'stored',
+  'ready',
+  'processing',
+  'failed',
+] as const;
+export type EmailProcessingStatus = (typeof EMAIL_PROCESSING_STATUSES)[number];
+
+export const EMAIL_PROCESSING_STATUS_META: Record<
+  EmailProcessingStatus,
+  { label: string; tone: StatusTone; description: string }
+> = {
+  received:   { label: 'Received',   tone: 'info',     description: 'The provider told us it exists.' },
+  stored:     { label: 'Stored',     tone: 'info',     description: 'Normalised and preserved.' },
+  ready:      { label: 'Ready',      tone: 'positive', description: 'Complete evidence, available to later processing.' },
+  processing: { label: 'Processing', tone: 'caution',  description: 'Claimed by a worker.' },
+  failed:     { label: 'Failed',     tone: 'caution',  description: 'Ingestion did not complete. See the reason.' },
+};
+
+export const EMAIL_SYNC_STATUSES = ['running', 'succeeded', 'failed'] as const;
+export type EmailSyncStatus = (typeof EMAIL_SYNC_STATUSES)[number];
+
+export const EMAIL_SYNC_STATUS_META: Record<EmailSyncStatus, { label: string; tone: StatusTone }> = {
+  running:   { label: 'Running',   tone: 'info' },
+  succeeded: { label: 'Succeeded', tone: 'positive' },
+  failed:    { label: 'Failed',    tone: 'caution' },
+};
+
+export const EMAIL_SYNC_TRIGGERS = ['initial', 'manual', 'scheduled'] as const;
+export type EmailSyncTrigger = (typeof EMAIL_SYNC_TRIGGERS)[number];
+
+export const EMAIL_SYNC_TRIGGER_LABELS: Record<EmailSyncTrigger, string> = {
+  initial: 'First sync',
+  manual: 'Started by hand',
+  scheduled: 'Scheduled',
+};

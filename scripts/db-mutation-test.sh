@@ -169,6 +169,26 @@ probe "figures staying private between recruiters" \
   "@supabase/tests/mutations/metrics_ungated.sql" \
   "A RECRUITER CANNOT READ THE FIGURES OF A COLLEAGUE"
 
+probe "candidates having no route into the mailbox" \
+  "@supabase/tests/mutations/email_candidate_access.sql" \
+  "CANDIDATE CANNOT READ ANY EMAIL MESSAGE"
+
+probe "email needing an explicit capability, not just an internal role" \
+  "@supabase/tests/mutations/email_recruiter_access.sql" \
+  "AN UNAUTHORIZED RECRUITER READS NO EMAIL"
+
+probe "one tenant's mailbox staying out of another's" \
+  "@supabase/tests/mutations/email_cross_tenant.sql" \
+  "CROSS-TENANT: EU MANAGER CANNOT READ THE APAC MESSAGE"
+
+probe "email content staying out of the audit log" \
+  "@supabase/tests/mutations/email_audit_unredacted.sql" \
+  "NO EMAIL BODY REACHES THE AUDIT LOG"
+
+probe "ingested evidence being uneditable through the API" \
+  "@supabase/tests/mutations/email_writable.sql" \
+  "NOBODY CAN EDIT AN EMAIL THROUGH THE API"
+
 probe "cross-candidate attachment being structurally impossible" \
   "alter table public.interviews
      drop constraint interviews_application_id_candidate_id_fkey;

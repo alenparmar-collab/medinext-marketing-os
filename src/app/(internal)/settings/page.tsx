@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
-import { requireInternal } from '@/server/auth/actor';
+import Link from 'next/link';
+import { requireInternal, can } from '@/server/auth/actor';
 import { PageHeader } from '@/components/patterns/page-header';
 import { Card, CardBody, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -43,6 +44,26 @@ export default async function SettingsPage() {
           </dl>
         </CardBody>
       </Card>
+
+      {can(actor, 'mailbox.view') ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>Marketing mailbox</CardTitle>
+          </CardHeader>
+          <CardBody>
+            <p className="text-[13px] text-[var(--text-secondary)]">
+              Connect a mailbox and see its synchronisation state. Email is ingested as evidence
+              only — nothing read from a mailbox creates or changes a candidate record.
+            </p>
+            <Link
+              href="/settings/mailbox"
+              className="mt-2 inline-block text-[13px] text-[var(--color-accent-600)] hover:underline"
+            >
+              Mailbox settings
+            </Link>
+          </CardBody>
+        </Card>
+      ) : null}
 
       <Card>
         <CardHeader>
