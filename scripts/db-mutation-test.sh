@@ -261,6 +261,18 @@ probe "a changed interpretation naming what it disagrees with" \
   "@supabase/tests/mutations/unlinked_change.sql" \
   "A CHANGED INTERPRETATION MUST NAME WHAT IT SUPERSEDES"
 
+probe "the operational day staying out of a candidate's reach" \
+  "@supabase/tests/mutations/operations_candidate_leak.sql" \
+  "A CANDIDATE COUNTS NO PROPOSALS AT ALL"
+
+probe "one tenant's day not counting another tenant's records" \
+  "@supabase/tests/mutations/operations_report_tenancy.sql" \
+  "CROSS-TENANT: THE EU DAY COUNTS NO APAC INTERVIEW"
+
+probe "a marked failure carrying the time it happened" \
+  "@supabase/tests/mutations/operations_failure_untimed.sql" \
+  "A MARKED FAILURE MUST SAY WHEN"
+
 probe "cross-candidate attachment being structurally impossible" \
   "alter table public.interviews
      drop constraint interviews_application_id_candidate_id_fkey;

@@ -34,16 +34,24 @@ export function DecisionPanel({
   fields,
   canApprove,
   eventLabel,
+  sourceLine,
 }: {
   proposalId: string;
   status: string;
   fields: EditableField[];
   canApprove: boolean;
   eventLabel: string;
+  /** e.g. "Email received 12 September" — where this record came from. */
+  sourceLine?: string | undefined;
 }) {
   const router = useRouter();
   const [, startTransition] = useTransition();
   const [busy, setBusy] = useState<null | 'approve' | 'reject' | 'ignore' | 'claim'>(null);
+  // A last look before a record exists. NOT a second decision engine — it
+  // decides nothing and checks nothing; it reads back what the server was
+  // already going to write, because "create an interview" is the one action on
+  // this page that another person can see afterwards.
+  const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [corrections, setCorrections] = useState<Record<string, string>>({});
@@ -65,7 +73,17 @@ export function DecisionPanel({
     setBusy(null);
 
     if (!result.ok) {
-      setError(`${result.message ?? 'That did not work.'} Reference: ${result.requestId ?? '—'}`);
+      // A CONFLICT here almost always means somebody else got there first. Say
+      // that, rather than showing the raw message and letting the reviewer
+      // guess whether they created something.
+      const conflict = /already|claimed|being reviewed/i.test(result.message ?? '');
+      setError(
+        conflict
+          ? `${result.message} This usually means another team member claimed or decided it first. Refresh to see the latest status.`
+          : `${result.message ?? 'That did not work.'} Reference: ${result.requestId ?? '—'}`,
+      );
+      setConfirming(false);
+      startTransition(() => router.refresh());
       return;
     }
     startTransition(() => router.refresh());
@@ -182,29 +200,80 @@ export function DecisionPanel({
         </p>
       ) : null}
 
+      {/* THE CONFIRMATION. Plain sentences describing the record about to
+          exist, and the email it came from. The server remains authoritative:
+          it re-reads the proposal, re-takes the claim and re-checks every
+          permission whatever this panel shows. */}
+      {confirming ? (
+        <section
+          aria-labelledby="confirm-approval"
+          className="rounded-md border border-[var(--border-strong)] bg-[var(--surface-sunken)] p-4"
+        >
+          <h3
+            id="confirm-approval"
+            className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--text-secondary)]"
+          >
+            You are about to create
+          </h3>
+          <p className="mt-1 text-[15px] font-medium text-[var(--text-primary)]">{eventLabel}</p>
+
+          <dl className="mt-2.5 flex flex-col gap-1.5">
+            {fields
+              .filter((field) => finalValue(field).trim() !== '')
+              .map((field) => (
+                <div key={field.key} className="flex flex-wrap gap-x-2 text-[13.5px]">
+                  <dt className="text-[var(--text-muted)]">{field.label}:</dt>
+                  <dd className="text-[var(--text-primary)]">{finalValue(field)}</dd>
+                </div>
+              ))}
+            {sourceLine ? (
+              <div className="flex flex-wrap gap-x-2 text-[13.5px]">
+                <dt className="text-[var(--text-muted)]">Source:</dt>
+                <dd className="text-[var(--text-primary)]">{sourceLine}</dd>
+              </div>
+            ) : null}
+          </dl>
+
+          <div className="mt-3.5 flex flex-wrap gap-2">
+            <Button
+              variant="primary"
+              size="sm"
+              disabled={busy !== null}
+              onClick={() =>
+                void run('approve', () =>
+                  approveProposalAction({
+                    reviewItemId: proposalId,
+                    corrections: Object.fromEntries(
+                      changed.map((f) => [f.key, corrections[f.key] as string]),
+                    ),
+                    notes: notes || null,
+                  }),
+                )
+              }
+            >
+              {busy === 'approve' ? 'Creating…' : 'Confirm approval'}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={busy !== null}
+              onClick={() => setConfirming(false)}
+            >
+              Back
+            </Button>
+          </div>
+        </section>
+      ) : null}
+
       <div className="flex flex-wrap gap-2">
         {canApprove ? (
           <Button
             variant="primary"
             size="sm"
             disabled={busy !== null || missing.length > 0}
-            onClick={() =>
-              void run('approve', () =>
-                approveProposalAction({
-                  reviewItemId: proposalId,
-                  corrections: Object.fromEntries(
-                    changed.map((f) => [f.key, corrections[f.key] as string]),
-                  ),
-                  notes: notes || null,
-                }),
-              )
-            }
+            onClick={() => setConfirming(true)}
           >
-            {busy === 'approve'
-              ? 'Creating…'
-              : changed.length > 0
-                ? 'Approve with corrections'
-                : 'Approve'}
+            {changed.length > 0 ? 'Approve with corrections' : 'Approve'}
           </Button>
         ) : (
           <p className="text-[13px] text-[var(--text-secondary)]">

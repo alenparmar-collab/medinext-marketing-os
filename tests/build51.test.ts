@@ -223,6 +223,20 @@ describe('daily report attribution', () => {
 /* =========================================================================
  * Provenance is untouched, and stays separate
  * ========================================================================= */
+/**
+ * Comments and string literals removed, so an assertion about DEPENDENCIES is
+ * not answered by prose. Deliberately crude — it does not need to parse
+ * TypeScript, only to stop a sentence counting as an import.
+ */
+function tsCodeOnly(text: string): string {
+  return text
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/(^|[^:])\/\/[^\n]*/g, '$1 ')
+    .replace(/'(?:[^'\\\n]|\\.)*'/g, (m) => (m.includes('@/') ? m : "''"))
+    .replace(/"(?:[^"\\\n]|\\.)*"/g, (m) => (m.includes('@/') ? m : '""'))
+    .replace(/`(?:[^`\\]|\\.)*`/g, '``');
+}
+
 describe('provenance survives intact', () => {
   it('the migration never writes created_by, source_type or source_reference', () => {
     expect(attributionCode).not.toMatch(/set\s+created_by\s*=/);
@@ -245,15 +259,22 @@ describe('provenance survives intact', () => {
   /**
    * This began as "nothing in this build implements email or AI".
    *
-   * Build 6 implements email deliberately, so the email half is now scoped to
-   * the attribution work it was actually about: the ownership model must not
-   * have grown a mailbox dependency. The AI half stays global and unchanged,
-   * because no build so far has an interpretation layer and the assertion is
-   * what keeps it that way.
+   * Build 6 implements email deliberately, so the email half was scoped to the
+   * attribution work it was actually about: the ownership model must not have
+   * grown a mailbox dependency. The AI half stays global, because the
+   * attribution layer still has no business importing an interpretation.
+   *
+   * Build 7C narrowed it once more, for the same reason Build 7A narrowed the
+   * AI half: it was matching the WORD rather than the dependency. The
+   * operations report explains, in a comment, that a busy mailbox is not a busy
+   * day — which is precisely the separation this assertion exists to defend,
+   * and it was failing for saying so. Comments and string literals are stripped
+   * before matching, so what is tested is an import or an identifier: a real
+   * dependency, not a mention of one.
    */
   it('the attribution work implements no email or AI integration', () => {
     const forbidden = /imap|smtp\b|mailbox|openai|anthropic|huggingface|hugging_face|embedding/i;
-    expect(forbidden.test(attribution)).toBe(false);
+    expect(forbidden.test(tsCodeOnly(attribution))).toBe(false);
 
     const attributionFiles = appSources.filter(
       ({ path }) =>
@@ -262,9 +283,16 @@ describe('provenance survives intact', () => {
         path.endsWith('patterns/attribution.tsx'),
     );
     expect(attributionFiles.length).toBeGreaterThan(0);
-    expect(attributionFiles.filter(({ text }) => forbidden.test(text)).map(({ path }) => path)).toEqual(
-      [],
+    expect(
+      attributionFiles.filter(({ text }) => forbidden.test(tsCodeOnly(text))).map(({ path }) => path),
+    ).toEqual([]);
+
+    // Non-vacuity: stripping must not have removed everything that matters. A
+    // file that genuinely imports the mailbox layer still trips the check.
+    expect(forbidden.test(tsCodeOnly("import { x } from '@/server/modules/mailboxes/x';"))).toBe(
+      true,
     );
+    expect(forbidden.test(tsCodeOnly('// we never read the mailbox here'))).toBe(false);
   });
 
   /**

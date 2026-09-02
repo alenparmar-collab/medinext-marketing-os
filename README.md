@@ -4,7 +4,7 @@ Marketing operations platform for candidate marketing. Replaces an Excel-based
 workflow with an auditable system, and gives each candidate a portal showing
 only their own information.
 
-**Current stage: Build 7B.1 — hardening.** Interviews and
+**Current stage: Build 7C — operations.** Interviews and
 assessments now have full scheduling and outcome screens; daily reports exist
 and their figures are **counted from the records rather than typed in**; a
 review queue surfaces records that need a human decision, in neutral language
@@ -23,8 +23,10 @@ sends it to a person, or ignores it — and every write goes through the same
 command a recruiter's form calls. Build 7B.1 then closed two correctness holes
 in that step: two simultaneous approvals could each create a record, and a
 second reading of an email that had changed its mind was treated as a duplicate
-and disappeared. **AI proposes. The server decides. RLS remains the final
-boundary.**
+and disappeared. Build 7C made the whole thing operable — a filterable queue, a
+review workspace that shows the evidence behind every proposed field, and a
+daily operational report where every figure opens the records it counted.
+**AI proposes. The server decides. RLS remains the final boundary.**
 
 ---
 
@@ -97,6 +99,10 @@ boundary.**
 | Atomic approval claim — one review item, one CRM action, under real concurrency | Done |
 | Server-computed proposal fingerprint over material fields | Done |
 | Changed re-interpretations surfaced for review instead of silently dropped | Done |
+| Review queue with filters, server-side search and pagination | Done |
+| Review workspace: evidence per field, claim state, existing record, conflict | Done |
+| Half-completed approvals marked, findable and counted | Done |
+| Operational day report, every figure traceable to its records | Done |
 | Recruiter workspace ("your day so far") and manager unit workspace | Done |
 | Email ingestion, AI, payments, sales, WhatsApp, mobile | Out of scope |
 
@@ -418,7 +424,7 @@ policies; it exercises them.
 npm run db:test
 ```
 
-442 assertions covering: anonymous access, role resolution, internal scope,
+461 assertions covering: anonymous access, role resolution, internal scope,
 cross-tenant isolation, candidate isolation in both directions on candidates,
 applications, activities, interviews, assessments, notifications, documents and
 the timeline, internal-note isolation, storage-object authorization, write
@@ -459,7 +465,13 @@ candidate and an unauthorized recruiter cannot take one at all, that one cannot
 be taken across tenants, that an approval which was never claimed is refused,
 that one review item cannot name two created records, that a changed
 interpretation must name what it supersedes, and that every decision carries a
-fingerprint.
+fingerprint; and the operational layer — a candidate counting no proposal, no
+email and no interpretation while still counting their own interviews, one
+tenant's day counting none of another's records, an unauthorized recruiter
+counting no decisions at all, a half-completed approval being findable and
+carrying the record it created, no message content reaching a failure record, a
+record that cites a reading citing one that exists, and an automatic record
+notifying the same people a typed one does.
 
 Where an assertion once hardcoded a count from the seed, it now compares the
 RLS-filtered result against a superuser query implementing the intended rule.
@@ -477,7 +489,7 @@ cannot download candidate B's file" is an assertion, not a claim.
 bash scripts/db-mutation-test.sh
 ```
 
-Forty-five probes, each deliberately breaking one guarantee and asserting that a
+Forty-eight probes, each deliberately breaking one guarantee and asserting that a
 named assertion catches it: candidate isolation on candidates, applications,
 interviews, assessments, notifications and stored files; internal notes staying
 out of the portal; notification idempotency; cross-candidate attachment;
@@ -504,7 +516,10 @@ decision reaching the audit log; decided content staying out of it; the claim
 being takeable only once; claiming going through the queue's permission rather
 than around it (a `SECURITY DEFINER` on that one function is enough to lose the
 policy); an approval having gone through the claim; one review item producing
-one record; and a changed interpretation naming what it disagrees with.
+one record; a changed interpretation naming what it disagrees with; the
+operational day staying out of a candidate's reach; one tenant's day not
+counting another tenant's records; and a marked failure carrying the time it
+happened.
 
 A green suite that cannot go red is worthless. Several of these probes have
 failed on first run, and every time they exposed a weak *test* rather than a
@@ -515,6 +530,36 @@ satisfied by audit rows the seed had already written, so removing the audit
 trigger changed nothing it looked at. Both were rewritten to create their own
 fixture and assert against it. Run this after any policy
 change.
+
+**Four more, broken on purpose — Build 7C.** The brief named A–D; each was run
+and restored:
+
+*A. Break proposal RLS.* Reducing the queue policy to `using (true)` turned
+**nine** assertions red, six in `decisions` and three in `operations` — which is
+the point of running it: the operational report has no policy of its own, so
+breaking the queue breaks the report too.
+
+```
+ decisions  | CANDIDATE CANNOT READ THE PROPOSAL QUEUE         | expected 0, got 6
+ operations | A CANDIDATE COUNTS NO PROPOSALS AT ALL           | expected 0, got 11
+ operations | AN UNAUTHORIZED RECRUITER COUNTS NO DECISIONS    | expected 0, got 11
+```
+
+*B. Break the atomic claim.* Permanent — phase E of `npm run db:concurrency`,
+which still produces twelve interviews from one review item on every run.
+
+*C. Break changed-interpretation detection.* Covered by the constant-fingerprint
+exercise below; 15 unit tests red.
+
+*D. Break daily-report authorization.* Widening the interview policy to any
+internal user turned **five** assertions red, including the one that exists for
+exactly this:
+
+```
+ operations | CROSS-TENANT: THE EU DAY COUNTS NO APAC INTERVIEW | expected 0, got 1
+```
+
+All four restored; the suite returned to 461/461.
 
 **Two more, broken on purpose — Build 7B.1.** The brief asked for both, and
 both were run:
@@ -615,7 +660,7 @@ bug this build exists to close, demonstrated rather than described.
 npm test
 ```
 
-377 assertions over validation schemas, the config/SQL sync, the Build 5 and 5.1
+396 assertions over validation schemas, the config/SQL sync, the Build 5 and 5.1
 guarantees, the email layer, and the interpretation pipeline — the latter run
 for real against an in-memory database and a fixture provider, across twenty
 fictional email fixtures including a prompt-injection attempt — including the ingestion service run for real
@@ -641,7 +686,10 @@ however the JSON is ordered or capitalised, that a changed date, time, zone,
 candidate, company or deadline fingerprints differently, that the claim is
 taken before the CRM write and released only when that write failed, and that
 approving twice is refused for an application, an interview and an assessment
-alike.
+alike; and that the operational day counts records rather than proposals, does
+not inflate when one email is read three times, carries the records behind every
+figure, filters by date, and separates what the machine did from what a person
+did.
 
 ### 3. HTTP smoke test
 
@@ -956,7 +1004,22 @@ sequence since.
     out of it is a change that will not raise a conflict. The list is in one
     file, is asserted field-by-field in the tests, and should be revisited
     whenever a CRM command starts using a field it did not before.
-33. **Nothing runs on its own.** Interpretation and decision are both triggered
+33. **The queue's search matches candidate, company, role, subject and sender.**
+    It is not full-text over email bodies: a phrase that appears only in the
+    body of a message will not find it. Bodies are deliberately not loaded into
+    list pages.
+34. **`review required`, `interpretation changed` and `partial failure` raise no
+    notification.** The notification system has always addressed a candidate's
+    audience, and pointing it at internal reviewers would mean building an
+    internal-recipient model — which is how internal intelligence ends up in
+    front of a candidate. These surface in the queue and on the dashboard
+    instead. Interviews, assessments and applications created from email DO
+    notify, exactly as typed ones do, and that is asserted.
+35. **The operational day is counted in UTC days.** A record created at 23:30 in
+    one timezone may land on the next UTC day. Every other date in this codebase
+    is handled the same way; it is stated here because a daily report is where
+    someone will notice.
+36. **Nothing runs on its own.** Interpretation and decision are both triggered
     by a request. There is no queue, no scheduler, and no polling — so an email
     that arrives at 2am is decided when somebody asks for it to be, not before.
 
@@ -1259,6 +1322,29 @@ cancelled, and not duplicated. A person is shown both readings and the fields
 that moved, and decides. This is not an automatic reconciliation system, and the
 database holds the line: an approval that was never claimed is refused, and one
 review item cannot name two created records.
+
+**A number you cannot open is a number nobody can defend.** The operational day
+(`/reports/operations`) counts rows that exist — an application counts when
+there is an application, an interview when there is an interview. A proposal
+still in review is not an interview. Three readings of one email are not three
+of anything. Emails received and interpretations run are reported separately and
+labelled "not CRM activity", because a busy mailbox is not a busy day. And every
+figure carries the records it counted, listed underneath: "Interviews: 2" is
+followed by the two interviews, each linked, each labelled with where it came
+from and whether a person confirmed it.
+
+**A half-completed approval leaves a mark.** Build 7B.1 handled the gap between
+the CRM write and its bookkeeping correctly and left no trace: the row stayed
+claimed and in review, which on screen is indistinguishable from "somebody is
+looking at this". So the one case a reviewer most needs to find was the one case
+they could not. It is now marked on the item, shown as its own panel with the
+created record named by id, filterable in the queue, counted in the day — and
+the instruction on it is the opposite of the usual one: *do not retry*. The
+claim is deliberately still held, which is what stops a second record.
+
+**Two reports, deliberately separate.** `/reports/daily` is the report a
+recruiter writes and confirms; `/reports/operations` is derived and read-only.
+Merging them would let a typed figure and a counted one sit in the same column.
 
 **What Build 7B still does not do.** It sends no email, no WhatsApp and no SMS;
 notifications are in-app only. It creates no candidate from an unknown sender.

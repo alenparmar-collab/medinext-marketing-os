@@ -8,7 +8,7 @@ import { PageHeader } from '@/components/patterns/page-header';
 import { Card, CardBody, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { formatDateTime } from '@/lib/utils/format';
+import { formatDate, formatDateTime } from '@/lib/utils/format';
 import { INTELLIGENCE_EVENT_TYPE_META, REVIEW_ITEM_PRIORITY_META } from '@/config/statuses';
 import { DECISION_REASON_META, PROPOSAL_REVIEW_STATUS_META } from '@/config/decisions';
 import { DecisionPanel, type EditableField } from '../decision-panel';
@@ -177,15 +177,36 @@ export default async function ProposalDetailPage({
     proposal.finalData ?? proposal.proposedData,
   );
 
-  const createdId =
-    proposal.createdApplicationId ?? proposal.createdInterviewId ?? proposal.createdAssessmentId;
-  const createdHref = proposal.createdInterviewId
-    ? `/interviews/${proposal.createdInterviewId}`
-    : proposal.createdAssessmentId
-      ? `/assessments/${proposal.createdAssessmentId}`
-      : proposal.createdApplicationId
-        ? `/applications/${proposal.createdApplicationId}`
-        : null;
+  // Somebody else holds the claim. The server would refuse this person's
+  // approval anyway — `claim_proposal` returns nothing to the second caller —
+  // so this is not the protection, it is the courtesy of saying so before they
+  // fill in a form that cannot be submitted.
+  const claimedByOther =
+    proposal.status === 'in_review' &&
+    proposal.claimedAt !== null &&
+    proposal.claimedByName !== null &&
+    proposal.claimedByName !== actor.fullName;
+
+  const partialFailure = proposal.failureCode === 'partial_failure';
+  const retryableFailure = proposal.failureCode === 'crm_write_failed';
+  const failureDetail = (proposal.failureDetail ?? {}) as Record<string, unknown>;
+
+  // Every field the proposal would write, paired with the text that supports
+  // it. Structured output and quoted evidence only — never model reasoning.
+  const evidenceByField = new Map(proposal.evidence.map((e) => [e.field, e.excerpt] as const));
+  const proposalRows = fields.map((field) => ({
+    key: field.key,
+    label: field.label,
+    value: field.value.trim() === '' ? null : field.value,
+    excerpt:
+      evidenceByField.get(field.key) ??
+      evidenceByField.get(field.key.replace(/_id$/, '')) ??
+      null,
+  }));
+
+  // Resolved once, in the query, so the page never has to work out which of
+  // three columns is set.
+  const createdId = proposal.createdRecord?.id ?? null;
 
   return (
     <div className="flex flex-col gap-5">
@@ -246,6 +267,80 @@ export default async function ProposalDetailPage({
                 {proposal.explanation}
               </p>
             ) : null}
+          </CardBody>
+        </Card>
+      ) : null}
+
+      {/* A HALF-COMPLETED APPROVAL. Above everything, because the instruction
+          here is the opposite of the usual one: do NOT try again. */}
+      {partialFailure ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>Partial failure</CardTitle>
+            <Badge tone="caution">Do not retry</Badge>
+          </CardHeader>
+          <CardBody>
+            <p className="text-[13.5px] text-[var(--text-primary)]">
+              The CRM record was created, but the final bookkeeping could not be completed.
+              The record is real and counts; this proposal was never marked approved.
+            </p>
+            <dl className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+              <Fact
+                label="Created record"
+                value={
+                  failureDetail.created_record_kind && failureDetail.created_record_id
+                    ? `${String(failureDetail.created_record_kind)} ${String(failureDetail.created_record_id)}`
+                    : 'Not recorded'
+                }
+              />
+              <Fact label="Review item" value={proposal.id} />
+              <Fact
+                label="Interpretation"
+                value={String(failureDetail.intelligence_run_id ?? proposal.intelligenceRunId)}
+              />
+              <Fact
+                label="Failed"
+                value={proposal.failedAt ? formatDateTime(proposal.failedAt) : 'Unknown'}
+              />
+            </dl>
+            <p className="mt-3 border-t border-[var(--border-subtle)] pt-3 text-[13px] text-[var(--text-secondary)]">
+              Approving again would create a second record. The claim is deliberately still
+              held so that cannot happen by accident. An administrator should confirm the
+              record above and close this item.
+            </p>
+          </CardBody>
+        </Card>
+      ) : null}
+
+      {retryableFailure ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>The last attempt did not complete</CardTitle>
+            <Badge tone="info">Safe to try again</Badge>
+          </CardHeader>
+          <CardBody>
+            <p className="text-[13.5px] text-[var(--text-primary)]">
+              An earlier approval failed before anything was written, and the item was
+              returned to the queue. Nothing was created, so approving now is safe.
+            </p>
+          </CardBody>
+        </Card>
+      ) : null}
+
+      {/* SOMEBODY ELSE IS ON THIS. */}
+      {claimedByOther ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>Currently being reviewed</CardTitle>
+            <Badge tone="caution">In review</Badge>
+          </CardHeader>
+          <CardBody>
+            <p className="text-[13.5px] text-[var(--text-primary)]">
+              This proposal is currently being reviewed by{' '}
+              <span className="font-medium">{proposal.claimedByName}</span>
+              {proposal.claimedAt ? ` since ${formatDateTime(proposal.claimedAt)}` : ''}. You can
+              read everything here, but approving is not available while somebody else holds it.
+            </p>
           </CardBody>
         </Card>
       ) : null}
@@ -383,6 +478,67 @@ export default async function ProposalDetailPage({
           </CardBody>
         </Card>
 
+        {/* WHAT THE READING PROPOSES, field by field, each against the text
+            that supports it. Structured output and quoted excerpts only — no
+            reasoning, no model narrative, nothing that is not either a value
+            the server derived or words that appear in the email. */}
+        <Card className="lg:col-span-2">
+          <CardHeader>
+            <CardTitle>What the reading proposes</CardTitle>
+            <span className="tabular text-[13px] text-[var(--text-muted)]">
+              Classification{' '}
+              {proposal.eventConfidence !== null
+                ? `${(proposal.eventConfidence * 100).toFixed(0)}%`
+                : 'not scored'}
+              {' · '}
+              Candidate match{' '}
+              {proposal.candidateMatchConfidence !== null
+                ? `${(proposal.candidateMatchConfidence * 100).toFixed(0)}%`
+                : 'none'}
+            </span>
+          </CardHeader>
+          <CardBody className="p-0">
+            {proposalRows.length === 0 ? (
+              <p className="p-5 text-[13px] text-[var(--text-muted)]">
+                This reading proposes no record. Nothing would be written.
+              </p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-[13px]">
+                  <thead>
+                    <tr className="border-b border-[var(--border-subtle)] text-[11px] uppercase tracking-[0.08em] text-[var(--text-muted)]">
+                      <th scope="col" className="px-5 py-2 font-medium">Field</th>
+                      <th scope="col" className="px-5 py-2 font-medium">Value</th>
+                      <th scope="col" className="px-5 py-2 font-medium">Supporting text</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {proposalRows.map((row) => (
+                      <tr key={row.key} className="border-b border-[var(--border-subtle)] last:border-b-0 align-top">
+                        <th scope="row" className="px-5 py-2.5 font-medium text-[var(--text-secondary)]">
+                          {row.label}
+                        </th>
+                        <td className="px-5 py-2.5 text-[var(--text-primary)]">
+                          {row.value ?? (
+                            <span className="text-[var(--text-muted)]">Not stated</span>
+                          )}
+                        </td>
+                        <td className="px-5 py-2.5 text-[var(--text-muted)]">
+                          {row.excerpt ? (
+                            <span className="italic">“{row.excerpt}”</span>
+                          ) : (
+                            <span>No quoted support</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </CardBody>
+        </Card>
+
         {/* RIGHT — the proposed action. */}
         <div className="flex flex-col gap-5">
           <Card>
@@ -403,7 +559,55 @@ export default async function ProposalDetailPage({
                   {proposal.candidateName ?? 'Candidate'}
                 </Link>
               ) : (
-                <p className="text-[14px] text-[var(--text-secondary)]">No candidate proposed.</p>
+                <>
+                  <p className="text-[14px] font-medium text-[var(--text-primary)]">
+                    Candidate match needs review
+                  </p>
+                  <p className="mt-1 text-[13px] text-[var(--text-secondary)]">
+                    The server could not identify this person with enough confidence to propose
+                    one. Nothing was chosen on your behalf.
+                  </p>
+
+                  {proposal.observedIdentifiers.emailAddresses.length > 0 ||
+                  proposal.observedIdentifiers.personNames.length > 0 ? (
+                    <div className="mt-3 border-t border-[var(--border-subtle)] pt-3">
+                      <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-[var(--text-muted)]">
+                        Identifiers in the message
+                      </p>
+                      <p className="mt-1 text-[13px] text-[var(--text-primary)]">
+                        {[
+                          ...proposal.observedIdentifiers.personNames,
+                          ...proposal.observedIdentifiers.emailAddresses,
+                        ].join(' · ')}
+                      </p>
+                    </div>
+                  ) : null}
+
+                  {proposal.possibleCandidates.length > 0 ? (
+                    <div className="mt-3 border-t border-[var(--border-subtle)] pt-3">
+                      <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-[var(--text-muted)]">
+                        Candidates you can see who might be this person
+                      </p>
+                      <ul className="mt-1.5 flex flex-col gap-2">
+                        {proposal.possibleCandidates.map((candidate) => (
+                          <li key={candidate.id}>
+                            <Link
+                              href={`/candidates/${candidate.id}`}
+                              className="text-[13.5px] font-medium text-[var(--text-primary)] hover:text-[var(--color-accent-600)] hover:underline"
+                            >
+                              {candidate.fullName}
+                            </Link>
+                            <p className="text-[12.5px] text-[var(--text-muted)]">{candidate.why}</p>
+                          </li>
+                        ))}
+                      </ul>
+                      <p className="mt-2 text-[12.5px] text-[var(--text-muted)]">
+                        Listed, not ranked. None of these has been selected, and a name on its
+                        own is never enough to choose one.
+                      </p>
+                    </div>
+                  ) : null}
+                </>
               )}
 
               {proposal.candidateMatchReasons.length > 0 ? (
@@ -423,25 +627,38 @@ export default async function ProposalDetailPage({
               <CardTitle>Proposed action</CardTitle>
             </CardHeader>
             <CardBody>
-              {createdHref ? (
-                <p className="mb-3 text-[13px] text-[var(--text-secondary)]">
-                  This produced{' '}
+              {proposal.createdRecord ? (
+                <div className="mb-3 rounded-md border border-[var(--border-subtle)] p-3">
+                  <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-[var(--text-muted)]">
+                    Existing CRM record
+                  </p>
+                  <dl className="mt-1.5 flex flex-col gap-1 text-[13px]">
+                    <Fact label={proposal.createdRecord.label} value={proposal.createdRecord.id} />
+                    {proposal.candidateName ? (
+                      <Fact label="Candidate" value={proposal.candidateName} />
+                    ) : null}
+                    {proposal.company ? <Fact label="Company" value={proposal.company} /> : null}
+                  </dl>
                   <Link
-                    href={createdHref}
-                    className="text-[var(--color-accent-600)] hover:underline"
+                    href={proposal.createdRecord.href}
+                    className="mt-2 inline-block text-[13px] text-[var(--color-accent-600)] hover:underline"
                   >
-                    a {proposal.eventType} record
+                    View {proposal.createdRecord.kind}
                   </Link>
-                  .
+                </div>
+              ) : proposal.status === 'approved' ? null : (
+                <p className="mb-3 text-[13px] text-[var(--text-muted)]">
+                  This proposal has not created a CRM record.
                 </p>
-              ) : null}
+              )}
 
               <DecisionPanel
                 proposalId={proposal.id}
                 status={proposal.status}
                 fields={fields}
-                canApprove={canApprove}
+                canApprove={canApprove && !claimedByOther && !partialFailure}
                 eventLabel={eventMeta.label}
+                sourceLine={`Email received ${formatDate(proposal.email.receivedAt)}`}
               />
 
               {proposal.decisionNotes ? (

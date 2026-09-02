@@ -97,14 +97,17 @@ export class FakeDb {
 }
 
 type Filter =
-  | { kind: 'eq' | 'neq' | 'lte' | 'gte' | 'is'; column: string; value: unknown }
-  | { kind: 'in'; column: string; values: unknown[] };
+  | { kind: 'eq' | 'neq' | 'lte' | 'lt' | 'gte' | 'gt' | 'is' | 'ilike'; column: string; value: unknown }
+  | { kind: 'in'; column: string; values: unknown[] }
+  | { kind: 'notNull'; column: string }
+  | { kind: 'or'; clauses: string }; 
 
 class FakeQuery {
   private filters: Filter[] = [];
   private pending: { kind: 'insert' | 'upsert' | 'update'; payload: Row } | null = null;
   private ordering: { column: string; ascending: boolean }[] = [];
   private limitTo: number | null = null;
+  private rangeFrom = 0;
 
   constructor(
     private readonly db: FakeDb,
@@ -160,6 +163,44 @@ class FakeQuery {
     return this;
   }
 
+  lt(column: string, value: unknown) {
+    this.filters.push({ kind: 'lt', column, value });
+    return this;
+  }
+
+  gt(column: string, value: unknown) {
+    this.filters.push({ kind: 'gt', column, value });
+    return this;
+  }
+
+  ilike(column: string, pattern: unknown) {
+    this.filters.push({ kind: 'ilike', column, value: pattern });
+    return this;
+  }
+
+  /** Only the shape the services use: `.not(column, 'is', null)`. */
+  not(column: string, operator: string, value: unknown) {
+    if (operator === 'is' && value === null) this.filters.push({ kind: 'notNull', column });
+    return this;
+  }
+
+  /**
+   * PostgREST's `or` takes a comma-separated clause string. Modelled rather
+   * than stubbed, because search correctness — matching the right rows and no
+   * others — is exactly what the tests are checking.
+   */
+  or(clauses: string) {
+    this.filters.push({ kind: 'or', clauses });
+    return this;
+  }
+
+  /** Inclusive on both ends, as PostgREST's range is. */
+  range(from: number, to: number) {
+    this.rangeFrom = from;
+    this.limitTo = to - from + 1;
+    return this;
+  }
+
   order(column: string, options?: { ascending?: boolean }) {
     this.ordering.push({ column, ascending: options?.ascending ?? true });
     return this;
@@ -172,6 +213,7 @@ class FakeQuery {
 
   private matches(row: Row): boolean {
     return this.filters.every((f) => {
+      if (f.kind === 'or') return f.clauses.split(',').some((clause) => matchesClause(row, clause));
       const actual = row[f.column];
       switch (f.kind) {
         case 'eq':
@@ -183,6 +225,14 @@ class FakeQuery {
           return f.value === null ? actual === null || actual === undefined : actual === f.value;
         case 'lte':
           return String(actual) <= String(f.value);
+        case 'lt':
+          return String(actual) < String(f.value);
+        case 'gt':
+          return String(actual) > String(f.value);
+        case 'ilike':
+          return matchesIlike(actual, String(f.value));
+        case 'notNull':
+          return actual !== null && actual !== undefined;
         case 'gte':
           return String(actual) >= String(f.value);
         case 'in':
@@ -200,6 +250,7 @@ class FakeQuery {
         return ascending ? left.localeCompare(right) : right.localeCompare(left);
       });
     }
+    out = out.slice(this.rangeFrom);
     return this.limitTo === null ? out : out.slice(0, this.limitTo);
   }
 
@@ -273,4 +324,39 @@ class FakeQuery {
       return Promise.resolve(resolve({ data: null, error }));
     }
   }
+}
+
+/** `%term%` as PostgREST means it: case-insensitive, % is the wildcard. */
+function matchesIlike(actual: unknown, pattern: string): boolean {
+  if (actual === null || actual === undefined) return false;
+  const escaped = pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/%/g, '.*');
+  return new RegExp(`^${escaped}$`, 'i').test(String(actual));
+}
+
+/**
+ * One clause of an `or` string: `column.op.value`, including the arrow form
+ * (`proposed_data->>company.ilike.%x%`) and `in.(a,b,c)`.
+ */
+function matchesClause(row: Row, clause: string): boolean {
+  const inMatch = /^([^.]+)\.in\.\((.*)\)$/.exec(clause);
+  if (inMatch) {
+    const [, column, list] = inMatch;
+    return list!.split(',').includes(String(row[column!]));
+  }
+
+  const parts = /^(.+?)\.(eq|ilike|like)\.(.*)$/.exec(clause);
+  if (!parts) return false;
+  const [, path, op, value] = parts;
+
+  let actual: unknown;
+  if (path!.includes('->>')) {
+    const [column, key] = path!.split('->>');
+    const json = row[column!] as Record<string, unknown> | undefined;
+    actual = json?.[key!];
+  } else {
+    actual = row[path!];
+  }
+
+  if (op === 'eq') return String(actual) === value;
+  return matchesIlike(actual, value!);
 }

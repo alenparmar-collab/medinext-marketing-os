@@ -255,6 +255,11 @@ async function markApproved(
         .from('intelligence_review_items')
         .update({
           status: 'approved',
+          // A retry that succeeded clears the mark its failed attempt left,
+          // so the queue stops flagging an item that is now fine.
+          failure_code: null,
+          failure_detail: null,
+          failed_at: null,
           ...patch,
           ...(written.kind === 'application' ? { created_application_id: written.recordId } : {}),
           ...(written.kind === 'interview' ? { created_interview_id: written.recordId } : {}),
@@ -271,6 +276,19 @@ async function markApproved(
     try {
       await write();
     } catch {
+      // Leave a mark, so the one case a reviewer most needs to find is findable
+      // — otherwise this row looks exactly like one somebody is working on.
+      // Best-effort by necessity: it is the same privileged path that just
+      // failed. The error below does not depend on it succeeding.
+      await markFailure(itemId, actor, {
+        failure_code: 'partial_failure',
+        failure_detail: {
+          created_record_kind: written.kind,
+          created_record_id: written.recordId,
+          intelligence_run_id: context.runId,
+        },
+      });
+
       throw new AppError(
         'PARTIAL_FAILURE',
         `The ${written.kind} was created (${written.recordId}), but this proposal could not ` +
@@ -431,6 +449,30 @@ export async function approveProposal(
  * open, and only one this request itself claimed. It can never turn a decided
  * item back into an undecided one.
  */
+/**
+ * Records that an approval half-completed.
+ *
+ * Deliberately swallows its own errors. It is called from failure paths, and a
+ * failure to record a failure must not replace the original error with a less
+ * useful one — the caller is already being handed everything needed to recover.
+ */
+async function markFailure(
+  itemId: string,
+  actor: ActorContext,
+  patch: { failure_code: string; failure_detail: Record<string, unknown> },
+): Promise<void> {
+  try {
+    await withServiceRole(actor, `Record approval failure for proposal ${itemId}`, async (db) => {
+      await db
+        .from('intelligence_review_items')
+        .update({ ...patch, failed_at: new Date().toISOString() })
+        .eq('id', itemId);
+    });
+  } catch {
+    // Nothing to do here that is better than the error already being thrown.
+  }
+}
+
 async function performCrmWriteOrRelease(
   reviewItemId: string,
   run: {
@@ -451,6 +493,12 @@ async function performCrmWriteOrRelease(
     // Best effort: if the release itself fails the original error is still the
     // one worth reporting, and the item stays claimed rather than being lost.
     await supabase.rpc('release_proposal_claim', { p_item_id: reviewItemId });
+    // Marked as retryable, which is the opposite instruction to a partial
+    // failure: nothing was created, so trying again is the right move.
+    await markFailure(reviewItemId, actor, {
+      failure_code: 'crm_write_failed',
+      failure_detail: { intelligence_run_id: run.id, event_type: run.event_type },
+    });
     throw error;
   }
 }

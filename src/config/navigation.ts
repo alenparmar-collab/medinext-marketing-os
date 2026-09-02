@@ -37,6 +37,9 @@ export const INTERNAL_NAV: NavItem[] = [
   { label: 'Proposals', href: '/proposals', icon: 'GitPullRequestArrow', status: 'ready', permission: 'proposal.review' },
   { label: 'Notifications', href: '/notifications', icon: 'Bell', status: 'ready' },
   { label: 'Reports', href: '/reports', icon: 'BarChart3', status: 'ready', permission: 'report.view_all' },
+  // Derived from records rather than written by a recruiter, so it sits behind
+  // the queue's permission rather than the report one.
+  { label: 'Operations day', href: '/reports/operations', icon: 'Activity', status: 'ready', permission: 'proposal.review' },
   { label: 'Team', href: '/team', icon: 'UserCog', status: 'ready', permission: 'user.view' },
   { label: 'Settings', href: '/settings', icon: 'Settings', status: 'ready' },
 ];

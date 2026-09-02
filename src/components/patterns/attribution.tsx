@@ -1,3 +1,4 @@
+import Link from 'next/link';
 import { SOURCE_KIND_META } from '@/config/statuses';
 import type { SourceKind } from '@/config/statuses';
 
@@ -29,6 +30,10 @@ export function Attribution({
   className?: string;
 }) {
   const meta = SOURCE_KIND_META[source];
+  const runId =
+    sourceReference && sourceReference.startsWith('intelligence:')
+      ? sourceReference.slice('intelligence:'.length)
+      : null;
 
   return (
     <dl className={className}>
@@ -61,7 +66,18 @@ export function Attribution({
         </dt>
         <dd className="text-[14px] text-[var(--text-primary)]">
           {meta.label}
-          {sourceReference ? (
+          {/* A record created from email carries `intelligence:<run id>`. Left
+              as opaque text it is a string nobody can follow; as a link it is
+              the whole provenance chain — the reading, and from there the email
+              it came from and the decision that approved it. */}
+          {runId ? (
+            <Link
+              href={`/intelligence/${runId}`}
+              className="ml-1.5 text-[12.5px] text-[var(--color-accent-600)] hover:underline"
+            >
+              View the reading it came from
+            </Link>
+          ) : sourceReference ? (
             <span className="ml-1.5 break-all text-[12px] text-[var(--text-muted)]">
               {sourceReference}
             </span>

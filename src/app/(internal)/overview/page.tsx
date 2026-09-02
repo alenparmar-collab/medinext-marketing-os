@@ -10,6 +10,7 @@ import { MarketingStatusBadge } from '@/components/patterns/status-badge';
 import { EmptyState } from '@/components/patterns/states';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { getQueueStanding } from '@/server/modules/operations/queries';
 import { getProposalActivity } from '@/server/modules/decisions/queries';
 import {
   DAILY_REPORT_METRICS,
@@ -26,11 +27,15 @@ export const metadata: Metadata = { title: 'Overview' };
  */
 export default async function OverviewPage() {
   const actor = await requireInternal();
-  const [metrics, attention, proposals] = await Promise.all([
+  const [metrics, attention, proposals, queue] = await Promise.all([
     getOverviewMetrics(actor.userId),
     getAttentionQueue(actor.userId),
     // RLS-filtered: a caller without proposal.review gets zeros, not a peek.
     can(actor, 'proposal.review') ? getProposalActivity() : Promise.resolve(null),
+    // The standing queue, which is a different question from today's activity:
+    // an item raised last week is still waiting today. Two queries, not one per
+    // figure.
+    can(actor, 'proposal.review') ? getQueueStanding() : Promise.resolve(null),
   ]);
 
   const nothingPending =
@@ -165,10 +170,44 @@ export default async function OverviewPage() {
                 </div>
               ))}
             </dl>
+            {queue ? (
+              <div className="mt-4 border-t border-[var(--border-subtle)] pt-3">
+                <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-[var(--text-muted)]">
+                  Review queue, right now
+                </p>
+                <dl className="mt-2 flex flex-wrap gap-x-6 gap-y-2">
+                  <QueueFigure
+                    label="Waiting"
+                    value={queue.waiting}
+                    href="/proposals"
+                  />
+                  <QueueFigure
+                    label="High priority"
+                    value={queue.highPriority}
+                    href="/proposals?priority=high"
+                  />
+                  <QueueFigure
+                    label="Interpretation changes"
+                    value={queue.interpretationChanges}
+                    href="/proposals?changed=1"
+                  />
+                  <QueueFigure
+                    label="Partial failures"
+                    value={queue.partialFailures}
+                    href="/proposals?failed=1&status=all"
+                  />
+                </dl>
+              </div>
+            ) : null}
+
             <p className="mt-3 text-[12px] text-[var(--text-muted)]">
               Records written from email count in the daily report like any other, because they are
               created by the same commands. Anything still waiting is not a record yet and counts
-              nowhere.
+              nowhere.{' '}
+              <Link href="/reports/operations" className="text-[var(--color-accent-600)] hover:underline">
+                See the full operational day
+              </Link>
+              .
             </p>
           </CardBody>
         </Card>
@@ -350,6 +389,25 @@ export default async function OverviewPage() {
           )}
         </CardBody>
       </Card>
+    </div>
+  );
+}
+
+/**
+ * A queue figure that opens the exact list it counted.
+ *
+ * A number nobody can open is a number nobody can act on: "4 high priority"
+ * should be one click from those four.
+ */
+function QueueFigure({ label, value, href }: { label: string; value: number; href: string }) {
+  return (
+    <div className="flex flex-col gap-0.5">
+      <dt className="text-[12px] text-[var(--text-muted)]">{label}</dt>
+      <dd className="tabular text-[17px] font-semibold leading-none">
+        <Link href={href} className="text-[var(--text-primary)] hover:text-[var(--color-accent-600)] hover:underline">
+          {value}
+        </Link>
+      </dd>
     </div>
   );
 }

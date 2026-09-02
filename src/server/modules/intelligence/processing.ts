@@ -185,6 +185,9 @@ export async function processEmailForIntelligence(
       candidate_match_confidence: match.candidateId === null ? null : match.confidence,
       candidate_match_reasons: match.reasons,
       candidate_match_evidence: match.evidence,
+      // Stored, not discarded: when matching resolves nobody, this is the only
+      // thing that lets a reviewer see WHY rather than just THAT.
+      observed_identifiers: interpretation.observed_identifiers,
       extracted_data: interpretation.extracted_data,
       evidence: interpretation.evidence,
       validation_ok: true,

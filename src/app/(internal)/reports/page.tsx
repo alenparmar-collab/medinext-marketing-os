@@ -62,9 +62,16 @@ export default async function ReportsPage({
         title="Reports"
         description="One day across the business unit. Every figure is counted from records — nobody types a total."
         actions={
-          <Button asChild variant="secondary" size="sm">
-            <Link href="/reports/daily">All daily reports</Link>
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            {/* Two different reports, deliberately separate: one a recruiter
+                writes and confirms, one derived from the records themselves. */}
+            <Button asChild variant="secondary" size="sm">
+              <Link href="/reports/operations">Operations day</Link>
+            </Button>
+            <Button asChild variant="secondary" size="sm">
+              <Link href="/reports/daily">All daily reports</Link>
+            </Button>
+          </div>
         }
       />
 

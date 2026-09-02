@@ -73,7 +73,7 @@ for path in / /overview /candidates /candidates/new /marketing /settings /team \
             /applications /applications/new /interviews /interviews/new \
             /assessments /assessments/new /notifications \
             /reports /reports/daily /reports/daily/new /reports/daily/today /review \
-            /emails /settings/mailbox /intelligence /proposals \
+            /emails /settings/mailbox /intelligence /proposals /reports/operations \
             /portal /portal/profile /portal/marketing /portal/documents \
             /portal/applications /portal/activity /portal/interviews \
             /portal/assessments /portal/notifications; do

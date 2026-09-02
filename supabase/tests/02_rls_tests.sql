@@ -3540,3 +3540,188 @@ select test.check('decisions', 'the original decision is still approved and stil
     where id = '00000000-0000-4000-9c00-000000000001'
       and status = 'approved'
       and created_interview_id = '00000000-0000-4000-9200-000000000031'), 1::bigint);
+
+-- ===========================================================================
+-- BUILD 7C — The operational layer
+-- ===========================================================================
+
+-- ---------------------------------------------------------------------------
+-- SECTION 59 — The operational day respects every boundary it reads across
+--
+-- The operations summary is not a new data source: it counts rows in
+-- applications, interviews, assessments, status history and the review queue.
+-- That makes its authorization exactly the authorization of those tables — so
+-- what is asserted here is that reading them AS EACH KIND OF CALLER produces
+-- the figures that caller is entitled to, and no others.
+--
+-- A report that leaks does not leak a report. It leaks the records underneath.
+-- ---------------------------------------------------------------------------
+select test.check('operations', 'A CANDIDATE COUNTS NO PROPOSALS AT ALL',
+  test.count_as(:'PRIYA_USER', 'select count(*) from public.intelligence_review_items'), 0::bigint);
+
+select test.check('operations', 'A CANDIDATE COUNTS NO EMAIL',
+  test.count_as(:'PRIYA_USER', 'select count(*) from public.email_messages'), 0::bigint);
+
+select test.check('operations', 'A CANDIDATE COUNTS NO INTERPRETATION',
+  test.count_as(:'PRIYA_USER', 'select count(*) from public.email_intelligence_runs'), 0::bigint);
+
+-- The figures a candidate CAN reach are only ever their own, which is what
+-- makes a portal-visible count safe even though the same tables feed the
+-- internal report.
+select test.check('operations', 'A CANDIDATE COUNTS ONLY THEIR OWN INTERVIEWS',
+  test.count_as(:'PRIYA_USER', 'select count(*) from public.interviews'),
+  (select count(*) from public.interviews where candidate_id = :'PRIYA'::uuid));
+
+select test.check('operations', 'A CANDIDATE COUNTS ONLY THEIR OWN APPLICATIONS',
+  test.count_as(:'PRIYA_USER', 'select count(*) from public.applications'),
+  (select count(*) from public.applications where candidate_id = :'PRIYA'::uuid));
+
+-- Cross-tenant: the EU manager's operational day contains no APAC record,
+-- whichever table the figure comes from.
+select test.check('operations', 'CROSS-TENANT: THE EU DAY COUNTS NO APAC APPLICATION',
+  test.count_as(:'MANAGER',
+    'select count(*) from public.applications a join public.candidates c on c.id = a.candidate_id '
+    || 'where c.business_unit_id = ''00000000-0000-4000-9000-000000000002'''), 0::bigint);
+
+select test.check('operations', 'CROSS-TENANT: THE EU DAY COUNTS NO APAC INTERVIEW',
+  test.count_as(:'MANAGER',
+    'select count(*) from public.interviews where business_unit_id = '
+    || '''00000000-0000-4000-9000-000000000002'''), 0::bigint);
+
+select test.check('operations', 'CROSS-TENANT: THE EU DAY COUNTS NO APAC PROPOSAL',
+  test.count_as(:'MANAGER',
+    'select count(*) from public.intelligence_review_items where business_unit_id = '
+    || '''00000000-0000-4000-9000-000000000002'''), 0::bigint);
+
+-- A recruiter without the queue capability sees no decision figures — the
+-- report page refuses them, and so does the table underneath it.
+select test.check('operations', 'AN UNAUTHORIZED RECRUITER COUNTS NO DECISIONS',
+  test.count_as(:'SALAS', 'select count(*) from public.intelligence_review_items'), 0::bigint);
+
+-- ---------------------------------------------------------------------------
+-- SECTION 60 — A half-completed approval is findable
+--
+-- Before 7C a partial failure left a row that looked exactly like one somebody
+-- was working on: claimed, in review, nothing created. The mark is what makes
+-- "what failed today" answerable at all.
+-- ---------------------------------------------------------------------------
+do $$
+declare
+  c_unit constant uuid := '00000000-0000-4000-9000-000000000001';
+  v_item    uuid;
+  v_blocked boolean;
+begin
+  delete from public.intelligence_review_items where idempotency_key = 'test:failure-mark';
+  insert into public.intelligence_review_items
+    (business_unit_id, intelligence_run_id, email_message_id, event_type,
+     outcome, status, proposed_data, idempotency_key, proposal_fingerprint,
+     claimed_by, claimed_at, failure_code, failure_detail, failed_at)
+  values (c_unit, '00000000-0000-4000-9b00-000000000001',
+          '00000000-0000-4000-9800-000000000001',
+          'interview', 'review_required', 'in_review', '{}'::jsonb,
+          'test:failure-mark', 'testfp:failure-mark',
+          '00000000-0000-4000-8000-000000000002', now(),
+          'partial_failure',
+          '{"created_record_kind":"interview","created_record_id":"00000000-0000-4000-9200-000000000031"}'::jsonb,
+          now())
+  returning id into v_item;
+
+  insert into test.results (section, name, passed, detail)
+  select 'operations', 'A PARTIAL FAILURE IS FINDABLE, NOT JUST THROWN', c = 1, 'rows: ' || c
+    from (select count(*) as c from public.intelligence_review_items
+           where failure_code = 'partial_failure' and failed_at is not null) t;
+
+  -- The recovery facts have to be there, or the mark says only that something
+  -- went wrong — which is the state 7C exists to end.
+  insert into test.results (section, name, passed, detail)
+  select 'operations', 'A PARTIAL FAILURE NAMES THE RECORD IT CREATED', c = 1, 'rows: ' || c
+    from (select count(*) as c from public.intelligence_review_items
+           where id = v_item
+             and failure_detail ->> 'created_record_id' is not null
+             and failure_detail ->> 'created_record_kind' is not null) t;
+
+  -- A code with no time, or a time with no code, is a fact about nothing.
+  v_blocked := false;
+  begin
+    update public.intelligence_review_items set failed_at = null where id = v_item;
+  exception when others then
+    v_blocked := true;
+  end;
+
+  insert into test.results (section, name, passed, detail)
+  values ('operations', 'A MARKED FAILURE MUST SAY WHEN',
+          v_blocked, case when v_blocked then 'ok' else 'a failure with no time was accepted' end);
+end $$;
+
+-- Recovery facts are ids and kinds. No email body, no model output, nothing a
+-- reviewer would have needed `email.view` to read.
+select test.check('operations', 'NO MESSAGE CONTENT REACHES A FAILURE RECORD',
+  (select count(*) from public.intelligence_review_items
+    where failure_detail is not null
+      and (failure_detail::text ilike '%interview is scheduled%'
+           or failure_detail::text ilike '%dear %')), 0::bigint);
+
+-- ---------------------------------------------------------------------------
+-- SECTION 61 — Automatic records are ordinary records
+--
+-- The operational report and the candidate timeline both depend on this: a
+-- record written from email is created by the same command, so it carries the
+-- same attribution, appears in the same timeline, and counts in the same
+-- figures. If it needed special handling anywhere, every count would need it.
+-- ---------------------------------------------------------------------------
+select test.check('operations', 'AN AUTOMATIC RECORD APPEARS IN THE TIMELINE LIKE ANY OTHER',
+  (select count(*) from public.interviews i
+    where i.source_type = 'email_event'
+      and not exists (
+        select 1 from public.marketing_activities a
+         where a.candidate_id = i.candidate_id
+           and a.activity_type = 'interview'
+      )), 0::bigint);
+
+-- Deliberately NOT "every email-sourced record cites a reading". A recruiter
+-- who reads an email and types the interview in themselves also has
+-- source_type = 'email_event', citing the message rather than an
+-- interpretation — that is honest provenance and predates the pipeline.
+--
+-- The claim that matters for traceability is the other direction: a record that
+-- SAYS it came from a reading must point at a reading that exists, or the
+-- provenance link on the record page goes nowhere.
+select test.check('operations', 'A RECORD THAT CITES A READING CITES ONE THAT EXISTS',
+  (select count(*) from public.interviews i
+    where i.source_reference like 'intelligence:%'
+      and not exists (
+        select 1 from public.email_intelligence_runs r
+         where r.id = replace(i.source_reference, 'intelligence:', '')::uuid
+      )), 0::bigint);
+
+select test.check('operations', 'AN AUTOMATIC RECORD IS DISTINGUISHABLE FROM A TYPED ONE',
+  (select count(*) from public.interviews
+    where source_reference like 'intelligence:%' and verified_at is not null), 0::bigint);
+
+-- Non-vacuity: the assertions above are only worth something if a record
+-- written by the pipeline exists to test.
+select test.check('operations', 'the automatic-record assertions are not vacuous',
+  (select count(*) > 0 from public.interviews where source_reference like 'intelligence:%'), true);
+
+-- ---------------------------------------------------------------------------
+-- SECTION 62 — Notifications stay connected
+--
+-- The notification triggers fire on INSERT and know nothing about where a
+-- record came from, which is exactly why an automatic interview notifies the
+-- same people a typed one does. Asserted rather than assumed, because "the
+-- pipeline creates records that silently notify nobody" is a failure that
+-- looks like success from every screen.
+-- ---------------------------------------------------------------------------
+select test.check('operations', 'AN AUTOMATIC INTERVIEW NOTIFIES ITS AUDIENCE',
+  (select count(*) from public.interviews i
+    where i.source_reference like 'intelligence:%'
+      and not exists (
+        select 1 from public.notifications n
+         where n.entity_type = 'interview' and n.entity_id = i.id
+      )), 0::bigint);
+
+-- And a candidate is never notified ABOUT the internal decision layer: the
+-- notification names the interview, not the proposal that produced it.
+select test.check('operations', 'NO NOTIFICATION NAMES A PROPOSAL',
+  (select count(*) from public.notifications
+    where entity_type = 'intelligence_review_items'), 0::bigint);

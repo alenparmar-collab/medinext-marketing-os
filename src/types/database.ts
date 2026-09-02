@@ -531,6 +531,7 @@ export type EmailIntelligenceRunRow = {
   candidate_match_confidence: number | null;
   candidate_match_reasons: string[];
   candidate_match_evidence: Record<string, unknown>;
+  observed_identifiers: Record<string, unknown>;
   extracted_data: Record<string, unknown>;
   evidence: { field: string; excerpt: string }[];
   validation_ok: boolean | null;
@@ -581,6 +582,9 @@ export type IntelligenceReviewItemRow = {
   superseded_record_id: string | null;
   superseded_record_kind: string | null;
   changed_fields: string[];
+  failure_code: string | null;
+  failure_detail: Record<string, unknown> | null;
+  failed_at: string | null;
   created_at: string;
   updated_at: string;
 }
